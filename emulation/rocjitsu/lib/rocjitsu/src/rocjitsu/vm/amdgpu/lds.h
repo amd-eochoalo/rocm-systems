@@ -19,7 +19,7 @@ namespace amdgpu {
 /// @details LDS is a fast on-chip SRAM shared by all wavefronts within a single CU.
 /// Size is configurable per CU. Addresses are byte-granularity, local to the CU
 /// (not globally visible).
-class Lds : public simdojo::MemoryInterface {
+class Lds final : public simdojo::MemoryInterface {
 public:
   /// @brief Construct LDS with the given size in kilobytes.
   explicit Lds(uint32_t size_kb) : data_(static_cast<size_t>(size_kb) * 1024, 0) {}

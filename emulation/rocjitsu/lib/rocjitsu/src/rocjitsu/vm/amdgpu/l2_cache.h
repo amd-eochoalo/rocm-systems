@@ -54,7 +54,7 @@ class GpuMemory; // Forward declaration for backing store writeback.
 /// placing CUs connected to the same L2 in different partitions) will cause
 /// data races on the cache data structure. The partitioner must enforce this
 /// constraint.
-class L2Cache : public simdojo::Component {
+class L2Cache final : public simdojo::Component {
 public:
   static constexpr uint32_t LINE_SIZE_BITS = 7; // 128 bytes
   static constexpr uint32_t NUM_SETS = 2048;

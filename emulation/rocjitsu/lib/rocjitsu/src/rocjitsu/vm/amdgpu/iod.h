@@ -22,7 +22,7 @@ namespace amdgpu {
 ///
 /// @details Each IOD serves a subset of XCDs and owns a portion of the memory-side cache
 /// and HBM stacks. The number of IODs and their XCD assignments are driven by config.
-class Iod : public simdojo::CompositeComponent {
+class Iod final : public simdojo::CompositeComponent {
 public:
   struct Config {
     uint32_t num_hbm_stacks; ///< Number of HBM stacks on this IOD.

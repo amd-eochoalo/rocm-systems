@@ -4,6 +4,7 @@
 #ifndef ROCJITSU_VM_RISC_V_HART_STATE_H_
 #define ROCJITSU_VM_RISC_V_HART_STATE_H_
 
+#include "rocjitsu/vm/risc_v/byte_memory.h"
 #include "rocjitsu/vm/thread_context.h"
 
 #include <cstdint>
@@ -46,10 +47,10 @@ struct HartState : public ThreadContext {
 /// @brief Convenience: cast a ThreadContext& to HartState*.
 inline HartState *as_hart(ThreadContext &ctx) { return static_cast<HartState *>(&ctx); }
 
-/// @brief Get the current thread's memory.
-Memory *current_memory();
+/// @brief Get the current thread's memory (ISA-facing interface).
+ByteMemory *current_memory();
 
-/// @brief Set the current thread's memory.
+/// @brief Set the current thread's memory (concrete Memory*; stored internally).
 void set_current_memory(Memory *m);
 
 // Sign-extend 32-bit result to 64 bits (common for W-instructions).

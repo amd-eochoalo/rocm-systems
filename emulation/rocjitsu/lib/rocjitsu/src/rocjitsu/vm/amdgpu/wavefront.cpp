@@ -8,6 +8,9 @@
 namespace rocjitsu {
 namespace amdgpu {
 
+ComputeUnitIface &Wavefront::cu() { return cu_; }
+const ComputeUnitIface &Wavefront::cu() const { return cu_; }
+
 void Wavefront::halt() {
   state_ = WfState::HALTED;
   cu_.release_wf(dispatch_id_, wg_id_);

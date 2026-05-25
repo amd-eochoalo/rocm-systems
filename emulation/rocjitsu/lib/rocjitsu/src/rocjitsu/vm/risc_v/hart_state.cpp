@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 #include "rocjitsu/vm/risc_v/hart_state.h"
+#include "rocjitsu/vm/risc_v/memory.h"
 
 namespace rocjitsu {
 namespace risc_v {
 
 static thread_local Memory *tl_memory = nullptr;
 
-Memory *current_memory() { return tl_memory; }
+ByteMemory *current_memory() { return tl_memory; }
 
 void set_current_memory(Memory *m) { tl_memory = m; }
 

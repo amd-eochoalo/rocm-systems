@@ -11,7 +11,7 @@
 /// type so they work with any ISA family whose encoding struct exposes the
 /// required field names.
 
-#include "rocjitsu/vm/amdgpu/compute_unit.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/mem_state.h"
 #include "rocjitsu/vm/amdgpu/wavefront.h"
 #include "util/log.h"

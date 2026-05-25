@@ -3,7 +3,6 @@
 
 #include "rocjitsu/isa/arch/risc_v/base_i.h"
 #include "rocjitsu/vm/risc_v/hart_state.h"
-#include "rocjitsu/vm/risc_v/memory.h"
 
 namespace rocjitsu {
 namespace risc_v {

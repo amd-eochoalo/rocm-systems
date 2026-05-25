@@ -25,7 +25,7 @@ namespace amdgpu {
 /// array of compute units within an XCD. The command processor lives at
 /// the XCD level; the shader engine owns only its CU array. Purely
 /// structural - CUs are activated by the command processor through ports.
-class ShaderEngine : public simdojo::CompositeComponent {
+class ShaderEngine final : public simdojo::CompositeComponent {
 public:
   /// @brief Configuration for a shader engine.
   struct Config {

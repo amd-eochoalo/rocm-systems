@@ -5,7 +5,7 @@
 // See lib/python/amdisa/README.md for regeneration instructions.
 
 #include "rocjitsu/isa/arch/amdgpu/rdna4/operand.h"
-#include "rocjitsu/vm/amdgpu/compute_unit.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/wavefront.h"
 #include <format>
 #include <stdexcept>

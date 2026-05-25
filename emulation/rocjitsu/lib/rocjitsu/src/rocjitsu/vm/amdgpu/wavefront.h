@@ -9,6 +9,7 @@
 
 #include "rocjitsu/base/api.h"
 #include "rocjitsu/isa/isa_traits.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/wait_counters.h"
 #include "rocjitsu/vm/thread_context.h"
 
@@ -19,7 +20,7 @@
 namespace rocjitsu {
 namespace amdgpu {
 
-// Forward declaration - wavefront accesses registers through its CU.
+// Forward declaration - VM-internal code can access the full type via cu_impl().
 class ComputeUnitCore;
 
 /// @brief Wavefront execution state.
@@ -117,12 +118,17 @@ public:
   /// @returns Const reference to the VGPR allocation slice.
   const RegAllocation &vgpr_alloc() const { return vgpr_alloc_; }
 
-  /// @brief Return the parent compute unit.
-  /// @returns Reference to the owning ComputeUnitCore.
-  ComputeUnitCore &cu() { return cu_; }
+  /// @brief Return the ISA-facing interface of the parent compute unit.
+  ComputeUnitIface &cu();
 
-  /// @returns Const reference to the owning ComputeUnitCore.
-  const ComputeUnitCore &cu() const { return cu_; }
+  /// @returns Const ISA-facing interface of the parent compute unit.
+  const ComputeUnitIface &cu() const;
+
+  /// @brief Return the full ComputeUnitCore (VM-internal use only).
+  ComputeUnitCore &cu_impl() { return cu_; }
+
+  /// @returns Const reference to the full ComputeUnitCore.
+  const ComputeUnitCore &cu_impl() const { return cu_; }
 
   /// @brief Return the EXEC mask.
   /// @returns EXEC mask (one bit per lane, 1 = active).

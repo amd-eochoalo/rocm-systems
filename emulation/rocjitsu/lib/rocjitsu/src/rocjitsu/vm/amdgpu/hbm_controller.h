@@ -23,7 +23,7 @@ namespace amdgpu {
 /// received on its completer port. In a timing model this would model HBM
 /// channel latency, bandwidth, and bank conflicts. The current functional
 /// implementation is synchronous and immediate.
-class HbmController : public simdojo::Component {
+class HbmController final : public simdojo::Component {
 public:
   explicit HbmController(GpuMemory *memory) : simdojo::Component("hbm"), memory_(memory) {
     cpl_ = add_port(std::make_unique<simdojo::Port>("cpl", 0, this, simdojo::PortDirection::IN,

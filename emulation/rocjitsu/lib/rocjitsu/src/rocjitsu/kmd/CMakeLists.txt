@@ -32,10 +32,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             rocjitsu_isa_rdna3_5
             rocjitsu_isa_rdna4
             rocjitsu_isa_risc_v
-            simdojo
-            rocjitsu_vm
-            rocjitsu_vm_amdgpu
-            rocjitsu_vm_risc_v
+            rocjitsu_vm_impl
             rocjitsu_config
             util
             flatbuffers

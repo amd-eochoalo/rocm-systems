@@ -4,7 +4,6 @@
 #include "rocjitsu/isa/arch/risc_v/a_ext.h"
 
 #include "rocjitsu/vm/risc_v/hart_state.h"
-#include "rocjitsu/vm/risc_v/memory.h"
 
 #include <algorithm>
 

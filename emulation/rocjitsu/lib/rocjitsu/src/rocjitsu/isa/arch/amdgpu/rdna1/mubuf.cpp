@@ -7,7 +7,7 @@
 #include "rocjitsu/isa/arch/amdgpu/rdna1/mubuf.h"
 #include "rocjitsu/isa/arch/amdgpu/rdna1/addr_calc.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/gfx10_cache_flags.h"
-#include "rocjitsu/vm/amdgpu/compute_unit.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/mem_state.h"
 #include "rocjitsu/vm/amdgpu/wavefront.h"
 #include "util/data_types.h"
@@ -2472,7 +2472,7 @@ BufferGl0InvMubuf::BufferGl0InvMubuf(const MachineInst *inst)
 }
 
 void BufferGl0InvMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  wf.cu().l1_scalar().invalidate_all();
+  wf.cu().invalidate_l1_scalar();
 }
 
 BufferGl1InvMubuf::BufferGl1InvMubuf(const MachineInst *inst)
@@ -2483,7 +2483,7 @@ BufferGl1InvMubuf::BufferGl1InvMubuf(const MachineInst *inst)
 }
 
 void BufferGl1InvMubuf::execute_impl(amdgpu::Wavefront &wf) {
-  wf.cu().l1_scalar().invalidate_all();
+  wf.cu().invalidate_l1_scalar();
 }
 
 BufferLoadFormatD16XMubuf::BufferLoadFormatD16XMubuf(const MachineInst *inst)

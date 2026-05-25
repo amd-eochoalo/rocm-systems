@@ -26,7 +26,7 @@ namespace amdgpu {
 /// Has an IN port for structural topology visibility. In functional mode,
 /// data flows via direct method calls; the port is unused. In clocked mode
 /// (future), L2 miss traffic would arrive through this port.
-class GpuMemory : public simdojo::SparseMemory {
+class GpuMemory final : public simdojo::SparseMemory {
 public:
   /// @brief Construct a GPU memory component.
   /// @param name Human-readable name (e.g., "vram").

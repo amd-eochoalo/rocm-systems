@@ -33,7 +33,7 @@ namespace amdgpu {
 /// serializes access because multiple XCDs assigned to the same IOD may share
 /// this MSC from different partition threads. Stripes allow concurrent access
 /// to different cache sets, eliminating contention for non-overlapping addresses.
-class MemorySideCache : public simdojo::Component {
+class MemorySideCache final : public simdojo::Component {
 public:
   static constexpr uint32_t LINE_SIZE_BITS = 7; // 128 bytes
   static constexpr uint32_t NUM_SETS = 65536;   // 65536 sets x 16-way x 128B = 128MB

@@ -23,12 +23,14 @@
 ///   - Input A[row][k]: use input_loc(dim=M, K, B, i=row, k, b, bits).
 ///     Input B[col][k]: use input_loc(dim=N, K, B, i=col, k, b, bits).
 
-#include "rocjitsu/vm/amdgpu/compute_unit.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "util/data_types.h"
+#include "util/log.h"
 #include "util/meta_programming.h"
 
 #include <bit>
 #include <cstdint>
+#include <format>
 #include <vector>
 
 namespace rocjitsu {
@@ -235,36 +237,36 @@ inline uint32_t permute_b_lane(uint32_t lane, uint32_t blgp) {
 // Element extraction functions
 // ---------------------------------------------------------------------------
 
-inline float extract_f32(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline float extract_f32(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   return std::bit_cast<float>(cu.read_vgpr(base + loc.vgpr_offset, loc.lane));
 }
 
-inline float extract_f16(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline float extract_f16(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   uint32_t raw = cu.read_vgpr(base + loc.vgpr_offset, loc.lane);
   return util::f16_to_f32(static_cast<uint16_t>((raw >> (loc.sub_element * 16)) & 0xFFFF));
 }
 
-inline float extract_bf16(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline float extract_bf16(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   uint32_t raw = cu.read_vgpr(base + loc.vgpr_offset, loc.lane);
   return util::bf16_to_f32(static_cast<uint16_t>((raw >> (loc.sub_element * 16)) & 0xFFFF));
 }
 
-inline int32_t extract_i8(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline int32_t extract_i8(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   uint32_t raw = cu.read_vgpr(base + loc.vgpr_offset, loc.lane);
   return static_cast<int32_t>(static_cast<int8_t>((raw >> (loc.sub_element * 8)) & 0xFF));
 }
 
-inline float extract_fp8(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline float extract_fp8(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   uint32_t raw = cu.read_vgpr(base + loc.vgpr_offset, loc.lane);
   return util::fp8_e4m3_to_f32(static_cast<uint8_t>((raw >> (loc.sub_element * 8)) & 0xFF));
 }
 
-inline float extract_bf8(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline float extract_bf8(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   uint32_t raw = cu.read_vgpr(base + loc.vgpr_offset, loc.lane);
   return util::bf8_e5m2_to_f32(static_cast<uint8_t>((raw >> (loc.sub_element * 8)) & 0xFF));
 }
 
-inline double extract_f64(amdgpu::ComputeUnitCore &cu, uint32_t base, const InputLoc &loc) {
+inline double extract_f64(amdgpu::ComputeUnitIface &cu, uint32_t base, const InputLoc &loc) {
   uint32_t lo = cu.read_vgpr(base + loc.vgpr_offset, loc.lane);
   uint32_t hi = cu.read_vgpr(base + loc.vgpr_offset + 1, loc.lane);
   return std::bit_cast<double>(static_cast<uint64_t>(hi) << 32 | lo);
@@ -283,7 +285,7 @@ inline double extract_f64(amdgpu::ComputeUnitCore &cu, uint32_t base, const Inpu
 /// @param abid  A-matrix broadcast source block ID.
 /// @param blgp  B-matrix lane group permutation pattern.
 template <typename ExtractA, typename ExtractB>
-void exec_f32(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
+void exec_f32(amdgpu::ComputeUnitIface &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
               uint32_t in_bits, uint32_t dst, uint32_t s0, uint32_t s1, uint32_t s2, ExtractA ea,
               ExtractB eb, uint32_t const_acc = ACC_FROM_VGPR, uint32_t cbsz = 0, uint32_t abid = 0,
               uint32_t blgp = 0) {
@@ -369,7 +371,7 @@ void exec_f32(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uint32_t K, u
 /// @param scale_a_base  VGPR base for A-matrix scale values.
 /// @param scale_b_base  VGPR base for B-matrix scale values.
 template <typename ExtractA, typename ExtractB>
-void exec_f32_scaled(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
+void exec_f32_scaled(amdgpu::ComputeUnitIface &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
                      uint32_t in_bits, uint32_t dst, uint32_t s0, uint32_t s1, uint32_t s2,
                      ExtractA ea, ExtractB eb, uint32_t const_acc, uint32_t cbsz, uint32_t abid,
                      uint32_t blgp, uint32_t scale_a_base, uint32_t scale_b_base) {
@@ -418,7 +420,7 @@ void exec_f32_scaled(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uint32
 }
 
 /// MFMA execute for i32 output with i8 input: D = C + A x B.
-inline void exec_i32_i8(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
+inline void exec_i32_i8(amdgpu::ComputeUnitIface &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
                         uint32_t dst, uint32_t s0, uint32_t s1, uint32_t s2,
                         uint32_t const_acc = ACC_FROM_VGPR) {
   struct Result {
@@ -450,7 +452,7 @@ inline void exec_i32_i8(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uin
 }
 
 /// MFMA execute for f64 output with f64 input: D = C + A x B.
-inline void exec_f64(amdgpu::ComputeUnitCore &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
+inline void exec_f64(amdgpu::ComputeUnitIface &cu, uint32_t M, uint32_t N, uint32_t K, uint32_t B,
                      uint32_t dst, uint32_t s0, uint32_t s1, uint32_t s2,
                      uint32_t const_acc = ACC_FROM_VGPR) {
   struct Result {

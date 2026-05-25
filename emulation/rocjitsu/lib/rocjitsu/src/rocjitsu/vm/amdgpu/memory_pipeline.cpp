@@ -383,7 +383,7 @@ void GlobalMemPipeline::initiate_access(Instruction &inst, Wavefront &wf) {
 }
 
 void GlobalMemPipeline::complete_access(Instruction &inst, Wavefront &wf) {
-  vector_complete(*inst.data_as<VectorMemState>(), wf.cu());
+  vector_complete(*inst.data_as<VectorMemState>(), wf.cu_impl());
 }
 
 void LocalMemPipeline::initiate_access(Instruction &inst, Wavefront &wf) {
@@ -482,11 +482,11 @@ void LocalMemPipeline::complete_access(Instruction &inst, Wavefront &wf) {
   auto &d = *inst.data_as<VectorMemState>();
   if (d.transpose != 0)
     transpose_response(d);
-  vector_complete(d, wf.cu());
+  vector_complete(d, wf.cu_impl());
 
   // DS dual-access (ds_read2/ds_write2): write the second access results.
   if (d.ds2_active && d.is_load) {
-    auto &cu = wf.cu();
+    auto &cu = wf.cu_impl();
     uint32_t vgpr_count = d.elem_size / 4;
     for (uint32_t lane = 0; lane < d.wf_size; ++lane) {
       if (!(d.lane_mask & (1ULL << lane)))

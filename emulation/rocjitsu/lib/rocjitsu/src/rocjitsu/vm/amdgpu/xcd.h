@@ -28,7 +28,7 @@ namespace amdgpu {
 /// @details Mirrors the CDNA hardware hierarchy where each XCD is an independent
 /// compute chiplet with its own command processor and shader engine array.
 /// The command processor dispatches work to CUs across all shader engines.
-class Xcd : public simdojo::CompositeComponent {
+class Xcd final : public simdojo::CompositeComponent {
 public:
   /// @brief Configuration for an Accelerator Complex Die (XCD).
   struct Config {

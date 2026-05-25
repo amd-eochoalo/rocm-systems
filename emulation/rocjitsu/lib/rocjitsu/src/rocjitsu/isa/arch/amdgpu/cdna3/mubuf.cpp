@@ -8,7 +8,7 @@
 #include "rocjitsu/isa/arch/amdgpu/cdna3/addr_calc.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/gfx940_cache_flags.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/gfx9_cache_flags.h"
-#include "rocjitsu/vm/amdgpu/compute_unit.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/mem_state.h"
 #include "rocjitsu/vm/amdgpu/wavefront.h"
 #include "util/data_types.h"
@@ -1370,7 +1370,7 @@ BufferWbl2Mubuf::BufferWbl2Mubuf(const MachineInst *inst)
   num_dst_ = 0;
 }
 
-void BufferWbl2Mubuf::execute_impl(amdgpu::Wavefront &wf) { wf.cu().l1_scalar().invalidate_all(); }
+void BufferWbl2Mubuf::execute_impl(amdgpu::Wavefront &wf) { wf.cu().invalidate_l1_scalar(); }
 
 BufferInvMubuf::BufferInvMubuf(const MachineInst *inst)
     : Mubuf("buffer_inv", reinterpret_cast<const OpEncoding *>(inst),
@@ -1379,7 +1379,7 @@ BufferInvMubuf::BufferInvMubuf(const MachineInst *inst)
   num_dst_ = 0;
 }
 
-void BufferInvMubuf::execute_impl(amdgpu::Wavefront &wf) { wf.cu().l1_scalar().invalidate_all(); }
+void BufferInvMubuf::execute_impl(amdgpu::Wavefront &wf) { wf.cu().invalidate_l1_scalar(); }
 
 BufferAtomicSwapMubuf::BufferAtomicSwapMubuf(const MachineInst *inst)
     : Mubuf("buffer_atomic_swap", reinterpret_cast<const OpEncoding *>(inst),

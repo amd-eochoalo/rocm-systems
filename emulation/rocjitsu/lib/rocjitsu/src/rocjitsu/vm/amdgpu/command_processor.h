@@ -72,7 +72,7 @@ struct HwQueue {
 ///
 /// Completion signals fire per-dispatch when all workgroups retire (gem5 model),
 /// not on global CU idle. Signals fire in per-queue submission order.
-class CommandProcessor : public simdojo::Component {
+class CommandProcessor final : public simdojo::Component {
 public:
   explicit CommandProcessor(std::string name) : simdojo::Component(std::move(name)) {}
   ~CommandProcessor() override { stop_doorbell_monitor(); }

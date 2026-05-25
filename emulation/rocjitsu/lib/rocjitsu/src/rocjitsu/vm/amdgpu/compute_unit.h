@@ -10,6 +10,7 @@
 #include "rocjitsu/base/api.h"
 #include "rocjitsu/isa/decoder.h"
 #include "rocjitsu/isa/instruction.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/gpu_memory.h"
 #include "rocjitsu/vm/amdgpu/l1_scalar_cache.h"
 #include "rocjitsu/vm/amdgpu/l1_vector_cache.h"
@@ -61,7 +62,8 @@ class CommandProcessor;
 /// file type, instruction execution dispatch, wavefront creation) are
 /// implemented by IsaExecComputeUnit<Mode, Isa>. Use the create() factory
 /// to construct.
-class ComputeUnitCore : public simdojo::CompositeComponent {
+class ComputeUnitCore : public simdojo::CompositeComponent,
+                        public ComputeUnitIface {
 public:
   /// @brief Configuration for a compute unit.
   struct Config {
@@ -327,27 +329,17 @@ public:
   /// @returns Index of the next wavefront slot to schedule.
   size_t next_wf_index() const { return next_wf_; }
 
-  /// @brief Read a scalar register from the physical SGPR file.
-  /// @param reg_idx Physical register index.
-  /// @returns Register value.
-  uint32_t read_sgpr(uint32_t reg_idx) const { return sgpr_file_[reg_idx]; }
+  // -- ComputeUnitIface overrides --
 
-  /// @brief Write a scalar register in the physical SGPR file.
-  /// @param reg_idx Physical register index.
-  /// @param val Value to write.
-  void write_sgpr(uint32_t reg_idx, uint32_t val) { sgpr_file_[reg_idx] = val; }
-
-  /// @brief Read a vector register lane from the physical VGPR file.
-  /// @param reg_idx Physical register index.
-  /// @param lane Lane index within the wavefront.
-  /// @returns Lane value.
-  virtual uint32_t read_vgpr(uint32_t reg_idx, uint32_t lane) const = 0;
-
-  /// @brief Write a vector register lane in the physical VGPR file.
-  /// @param reg_idx Physical register index.
-  /// @param lane Lane index within the wavefront.
-  /// @param val Value to write.
-  virtual void write_vgpr(uint32_t reg_idx, uint32_t lane, uint32_t val) = 0;
+  uint32_t read_sgpr(uint32_t reg_idx) const override { return sgpr_file_[reg_idx]; }
+  void write_sgpr(uint32_t reg_idx, uint32_t val) override { sgpr_file_[reg_idx] = val; }
+  uint32_t read_vgpr(uint32_t reg_idx, uint32_t lane) const override = 0;
+  void write_vgpr(uint32_t reg_idx, uint32_t lane, uint32_t val) override = 0;
+  void invalidate_l1_scalar() override { l1_scalar_.invalidate_all(); }
+  void writeback_l1_scalar() override { l1_scalar_.writeback_all(); }
+  void invalidate_l1_vector() override { l1_vector_.invalidate_all(); }
+  uint32_t id() const override { return Component::id(); }
+  std::string full_path() const override { return Component::full_path(); }
 
   /// @brief Return a pointer to a wavefront's SGPR data in the physical file.
   /// @param base Base register index in the SGPR file.
@@ -544,7 +536,7 @@ private:
 /// @tparam Mode Execution mode (FUNCTIONAL or CLOCKED).
 /// @tparam Isa ISA traits struct satisfying the GpuIsa concept.
 template <simdojo::ExecMode Mode, GpuIsa Isa>
-class IsaExecComputeUnit : public ExecComputeUnit<Mode> {
+class IsaExecComputeUnit final : public ExecComputeUnit<Mode> {
 public:
   using Vgpr = simdojo::VectorReg<Isa::WF_SIZE, uint32_t>;
 

@@ -7,7 +7,7 @@
 #include "rocjitsu/isa/arch/amdgpu/cdna2/smem.h"
 #include "rocjitsu/isa/arch/amdgpu/cdna2/addr_calc.h"
 #include "rocjitsu/isa/arch/amdgpu/shared/gfx9_cache_flags.h"
-#include "rocjitsu/vm/amdgpu/compute_unit.h"
+#include "rocjitsu/vm/amdgpu/compute_unit_iface.h"
 #include "rocjitsu/vm/amdgpu/mem_state.h"
 #include "rocjitsu/vm/amdgpu/wavefront.h"
 #include "util/data_types.h"
@@ -599,7 +599,7 @@ SDcacheInvSmem::SDcacheInvSmem(const MachineInst *inst)
   num_dst_ = 0;
 }
 
-void SDcacheInvSmem::execute_impl(amdgpu::Wavefront &wf) { wf.cu().l1_scalar().invalidate_all(); }
+void SDcacheInvSmem::execute_impl(amdgpu::Wavefront &wf) { wf.cu().invalidate_l1_scalar(); }
 
 SDcacheWbSmem::SDcacheWbSmem(const MachineInst *inst)
     : Smem("s_dcache_wb", reinterpret_cast<const OpEncoding *>(inst),
@@ -608,7 +608,7 @@ SDcacheWbSmem::SDcacheWbSmem(const MachineInst *inst)
   num_dst_ = 0;
 }
 
-void SDcacheWbSmem::execute_impl(amdgpu::Wavefront &wf) { wf.cu().l1_scalar().writeback_all(); }
+void SDcacheWbSmem::execute_impl(amdgpu::Wavefront &wf) { wf.cu().writeback_l1_scalar(); }
 
 SDcacheInvVolSmem::SDcacheInvVolSmem(const MachineInst *inst)
     : Smem("s_dcache_inv_vol", reinterpret_cast<const OpEncoding *>(inst),
@@ -618,7 +618,7 @@ SDcacheInvVolSmem::SDcacheInvVolSmem(const MachineInst *inst)
 }
 
 void SDcacheInvVolSmem::execute_impl(amdgpu::Wavefront &wf) {
-  wf.cu().l1_scalar().invalidate_all();
+  wf.cu().invalidate_l1_scalar();
 }
 
 SDcacheWbVolSmem::SDcacheWbVolSmem(const MachineInst *inst)
@@ -628,7 +628,7 @@ SDcacheWbVolSmem::SDcacheWbVolSmem(const MachineInst *inst)
   num_dst_ = 0;
 }
 
-void SDcacheWbVolSmem::execute_impl(amdgpu::Wavefront &wf) { wf.cu().l1_scalar().writeback_all(); }
+void SDcacheWbVolSmem::execute_impl(amdgpu::Wavefront &wf) { wf.cu().writeback_l1_scalar(); }
 
 SMemtimeSmem::SMemtimeSmem(const MachineInst *inst)
     : Smem("s_memtime", reinterpret_cast<const OpEncoding *>(inst), make_exec_fn<SMemtimeSmem>()),
