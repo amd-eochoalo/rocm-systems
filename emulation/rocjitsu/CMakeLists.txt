@@ -219,6 +219,11 @@ if(BUILD_TESTING)
     add_subdirectory(fuzzer/tests)
 endif()
 
+# Optional RocFuzz AFL++ integration. The fuzzer subdirectory is a separate
+# DBI client that shares rocjitsu code-object, decoder, CFG, and instrumentation
+# substrate without coupling it to the KMD simulator path.
+add_subdirectory(fuzzer)
+
 # ---------------------------------------------------------------------------
 # Install rules.
 # ---------------------------------------------------------------------------
