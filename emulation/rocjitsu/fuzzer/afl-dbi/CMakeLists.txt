@@ -24,6 +24,24 @@ find_path(
     PATH_SUFFIXES include
 )
 
+add_library(rocjitsu_afl_raw_elf STATIC runtime/raw_amdgpu_elf.cpp)
+target_include_directories(
+    rocjitsu_afl_raw_elf
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+)
+rj_configure_target(rocjitsu_afl_raw_elf PRIVATE_INCLUDES)
+
+add_executable(rocjitsu_afl_raw_amdgpu_elf_test tests/raw_amdgpu_elf_test.cpp)
+target_link_libraries(
+    rocjitsu_afl_raw_amdgpu_elf_test
+    PRIVATE rocjitsu_afl_raw_elf GTest::gtest_main
+)
+rj_configure_target(rocjitsu_afl_raw_amdgpu_elf_test TEST)
+add_test(
+    NAME RocjitsuAflDbi.RawAmdGpuElf
+    COMMAND rocjitsu_afl_raw_amdgpu_elf_test
+)
+
 if(ROCFUZZ_HIP_RUNTIME AND ROCFUZZ_HIP_INCLUDE_DIR)
     add_library(rocjitsu_afl_preload SHARED runtime/afl_preload.cpp)
     target_include_directories(
