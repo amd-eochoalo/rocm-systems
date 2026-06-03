@@ -1,8 +1,9 @@
-# AFL hello_world smoke test
+# AFL smoke tests
 
-This directory contains a small AFL++ smoke test that verifies the AFL compiler
-wrapper and `afl-fuzz` are available. The target is intentionally simple and
-non-crashing so it can run as a short CTest check.
+This directory contains small AFL++ smoke tests that verify the AFL compiler
+wrapper and `afl-fuzz` are available. The hello-world target is intentionally
+simple and non-crashing, while the hipBLASLt transform target exercises a real
+ROCm library entrypoint with bounded inputs.
 
 ## Build AFL++
 
@@ -22,6 +23,8 @@ targets:
 cmake -S emulation/rocjitsu -B build/rocjitsu -G Ninja -DBUILD_TESTING=ON
 cmake --build build/rocjitsu --target hello_world_afl
 cmake --build build/rocjitsu --target hello_world_afl_persistent
+cmake --build build/rocjitsu --target hipblaslt_transform_afl
+cmake --build build/rocjitsu --target hipblaslt_transform_afl_persistent
 ```
 
 If AFL++ is built outside the rocjitsu tree, pass its checkout path:
@@ -37,6 +40,8 @@ The compiled binaries are written to:
 ```text
 build/rocjitsu/fuzzer/tests/bin/hello_world_afl
 build/rocjitsu/fuzzer/tests/bin/hello_world_afl_persistent
+build/rocjitsu/fuzzer/tests/bin/hipblaslt_transform_afl
+build/rocjitsu/fuzzer/tests/bin/hipblaslt_transform_afl_persistent
 ```
 
 ## Fuzz the test
@@ -76,10 +81,44 @@ afl-fuzz \
   build/rocjitsu/fuzzer/tests/bin/hello_world_afl_persistent
 ```
 
+The hipBLASLt transform target mutates bounded matrix dimensions, transposition
+flags, leading dimensions, scalar values, and input matrix values before calling
+`hipblasLtMatrixTransform`. It uses the checked-in seed corpus:
+
+```bash
+rm -rf build/rocjitsu/fuzzer/tests/hipblaslt_transform_findings
+
+AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
+AFL_NO_UI=1 \
+AFL_SKIP_CPUFREQ=1 \
+afl-fuzz \
+  -i emulation/rocjitsu/fuzzer/tests/seeds/hipblaslt_transform \
+  -o build/rocjitsu/fuzzer/tests/hipblaslt_transform_findings \
+  -V 1 -- \
+  build/rocjitsu/fuzzer/tests/bin/hipblaslt_transform_afl
+```
+
+The persistent hipBLASLt target uses the same harness with
+`RJ_AFL_PERSISTENT_MODE` defined:
+
+```bash
+rm -rf build/rocjitsu/fuzzer/tests/hipblaslt_transform_persistent_findings
+
+AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES=1 \
+AFL_NO_UI=1 \
+AFL_SKIP_CPUFREQ=1 \
+afl-fuzz \
+  -i emulation/rocjitsu/fuzzer/tests/seeds/hipblaslt_transform \
+  -o build/rocjitsu/fuzzer/tests/hipblaslt_transform_persistent_findings \
+  -V 1 -- \
+  build/rocjitsu/fuzzer/tests/bin/hipblaslt_transform_afl_persistent
+```
+
 CTest runs the same flow with:
 
 ```bash
 ctest --test-dir build/rocjitsu -R RocFuzz.HelloWorldAFL -V
+ctest --test-dir build/rocjitsu -R RocFuzz.HipblasLtTransformAFL -V
 ```
 
 ## Read AFL output
@@ -89,6 +128,8 @@ AFL++ writes findings under the output directory:
 ```text
 build/rocjitsu/fuzzer/tests/hello_world_findings/default/
 build/rocjitsu/fuzzer/tests/hello_world_persistent_findings/default/
+build/rocjitsu/fuzzer/tests/hipblaslt_transform_findings/default/
+build/rocjitsu/fuzzer/tests/hipblaslt_transform_persistent_findings/default/
 ```
 
 Useful files and directories:
