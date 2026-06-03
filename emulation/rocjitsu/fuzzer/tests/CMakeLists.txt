@@ -32,6 +32,10 @@ if(NOT RJ_AFL_CXX_EXECUTABLE OR NOT RJ_AFL_FUZZ_EXECUTABLE)
     return()
 endif()
 
+set(RJ_AFL_PRELOAD_LIBRARY
+    "${CMAKE_BINARY_DIR}/fuzzer/afl-dbi/librocjitsu_afl_preload.so"
+)
+
 set(RJ_FUZZ_HELLO_WORLD_BIN "${CMAKE_CURRENT_BINARY_DIR}/bin/hello_world_afl")
 set(RJ_FUZZ_HELLO_WORLD_PERSISTENT_BIN
     "${CMAKE_CURRENT_BINARY_DIR}/bin/hello_world_afl_persistent"

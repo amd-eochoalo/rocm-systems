@@ -25,6 +25,11 @@
 #define __AFL_LOOP(_count) rj_fuzz::fallback_afl_loop_once()
 #endif
 
+extern "C" {
+int rocjitsu_afl_persistent_begin() __attribute__((weak));
+int rocjitsu_afl_persistent_end() __attribute__((weak));
+}
+
 namespace rj_fuzz {
 
 inline bool fallback_afl_loop_once() {
@@ -94,6 +99,24 @@ inline void crash_on_hip_error(const char *what, hipError_t status) {
     return;
   std::fprintf(stderr, "%s failed: %s\n", what, hipGetErrorString(status));
   std::abort();
+}
+
+inline int persistent_iteration_begin() {
+  if (rocjitsu_afl_persistent_begin != nullptr)
+    return rocjitsu_afl_persistent_begin();
+  return 0;
+}
+
+inline int persistent_iteration_end() {
+  if (rocjitsu_afl_persistent_end != nullptr)
+    return rocjitsu_afl_persistent_end();
+
+  const hipError_t status = hipDeviceSynchronize();
+  if (status == hipSuccess)
+    return 0;
+
+  std::fprintf(stderr, "hipDeviceSynchronize failed: %s\n", hipGetErrorString(status));
+  return static_cast<int>(status);
 }
 
 template <typename T> class DeviceBuffer {

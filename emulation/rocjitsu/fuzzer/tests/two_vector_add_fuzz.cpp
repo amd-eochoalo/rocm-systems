@@ -149,6 +149,9 @@ int run_case(HipModule &module, const std::vector<uint8_t> &input) {
       !device_d.copy_from_host(host_d) || !device_e.copy_from_host(host_e))
     return 0;
 
+  if (const int rc = persistent_iteration_begin(); rc != 0)
+    return rc;
+
   constexpr unsigned block_size = 128;
   const unsigned grid_size = (n + block_size - 1) / block_size;
   float *a = device_a.get();
@@ -162,7 +165,8 @@ int run_case(HipModule &module, const std::vector<uint8_t> &input) {
                      hipModuleLaunchKernel(module.function, grid_size, 1, 1, block_size, 1, 1, 0,
                                            nullptr, args, nullptr));
 
-  crash_on_hip_error("hipDeviceSynchronize", hipDeviceSynchronize());
+  if (const int rc = persistent_iteration_end(); rc != 0)
+    return rc;
 
   std::vector<float> host_c(n);
   std::vector<float> host_f(n);
