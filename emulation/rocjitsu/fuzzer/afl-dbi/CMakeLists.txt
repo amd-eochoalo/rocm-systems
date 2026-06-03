@@ -30,7 +30,10 @@ if(ROCFUZZ_HIP_RUNTIME AND ROCFUZZ_HIP_INCLUDE_DIR)
         rocjitsu_afl_preload
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${ROCFUZZ_HIP_INCLUDE_DIR}
     )
-    target_link_libraries(rocjitsu_afl_preload PRIVATE ${ROCFUZZ_HIP_RUNTIME})
+    target_link_libraries(
+        rocjitsu_afl_preload
+        PRIVATE ${ROCFUZZ_HIP_RUNTIME} ${CMAKE_DL_LIBS}
+    )
     target_compile_definitions(
         rocjitsu_afl_preload
         PRIVATE __HIP_PLATFORM_AMD__
@@ -39,6 +42,24 @@ if(ROCFUZZ_HIP_RUNTIME AND ROCFUZZ_HIP_INCLUDE_DIR)
     set_target_properties(
         rocjitsu_afl_preload
         PROPERTIES OUTPUT_NAME rocjitsu_afl_preload
+    )
+    add_executable(
+        rocjitsu_afl_preload_symbols_test
+        tests/afl_preload_symbols_test.cpp
+    )
+    target_compile_definitions(
+        rocjitsu_afl_preload_symbols_test
+        PRIVATE ROCJITSU_AFL_PRELOAD_PATH="$<TARGET_FILE:rocjitsu_afl_preload>"
+    )
+    target_link_libraries(
+        rocjitsu_afl_preload_symbols_test
+        PRIVATE GTest::gtest_main ${CMAKE_DL_LIBS}
+    )
+    rj_configure_target(rocjitsu_afl_preload_symbols_test TEST)
+    add_dependencies(rocjitsu_afl_preload_symbols_test rocjitsu_afl_preload)
+    add_test(
+        NAME RocjitsuAflDbi.PreloadSymbols
+        COMMAND rocjitsu_afl_preload_symbols_test
     )
 else()
     message(
