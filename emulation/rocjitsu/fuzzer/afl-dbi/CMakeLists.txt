@@ -61,6 +61,38 @@ if(ROCFUZZ_HIP_RUNTIME AND ROCFUZZ_HIP_INCLUDE_DIR)
         NAME RocjitsuAflDbi.PreloadSymbols
         COMMAND rocjitsu_afl_preload_symbols_test
     )
+
+    add_library(rocjitsu_afl_fake_hip_runtime SHARED tests/fake_hip_runtime.cpp)
+    rj_configure_target(rocjitsu_afl_fake_hip_runtime PRIVATE_INCLUDES)
+
+    add_executable(
+        rocjitsu_afl_preload_runtime_test
+        tests/afl_preload_runtime_test.cpp
+    )
+    target_include_directories(
+        rocjitsu_afl_preload_runtime_test
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(
+        rocjitsu_afl_preload_runtime_test
+        PRIVATE
+            ROCJITSU_AFL_PRELOAD_PATH="$<TARGET_FILE:rocjitsu_afl_preload>"
+            ROCJITSU_AFL_FAKE_HIP_RUNTIME_PATH="$<TARGET_FILE:rocjitsu_afl_fake_hip_runtime>"
+    )
+    target_link_libraries(
+        rocjitsu_afl_preload_runtime_test
+        PRIVATE GTest::gtest_main ${CMAKE_DL_LIBS}
+    )
+    rj_configure_target(rocjitsu_afl_preload_runtime_test TEST)
+    add_dependencies(
+        rocjitsu_afl_preload_runtime_test
+        rocjitsu_afl_preload
+        rocjitsu_afl_fake_hip_runtime
+    )
+    add_test(
+        NAME RocjitsuAflDbi.PreloadRuntime
+        COMMAND rocjitsu_afl_preload_runtime_test
+    )
 else()
     message(
         STATUS
