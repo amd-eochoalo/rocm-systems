@@ -1,6 +1,18 @@
 #include "rocjitsu_fuzzer/afl_runtime.h"
 
+#include "rocjitsu/code/amdgpu_elf_reader.h"
+#include "rocjitsu/code/hsa_code_object_reader_rewriter.h"
+
 #include <hip/hip_runtime_api.h>
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+#pragma clang diagnostic ignored "-Wnested-anon-types"
+#endif
+#include <hsa/hsa.h>
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -9,6 +21,8 @@
 
 #include <algorithm>
 #include <mutex>
+#include <optional>
+#include <span>
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
@@ -34,6 +48,13 @@ using hipMalloc_t = hipError_t (*)(void **, size_t);
 using hipMemset_t = hipError_t (*)(void *, int, size_t);
 using hipFree_t = hipError_t (*)(void *);
 using hipGetErrorString_t = const char *(*)(hipError_t);
+using hsa_code_object_reader_create_from_memory_t = hsa_status_t (*)(const void *, size_t,
+                                                                     hsa_code_object_reader_t *);
+using hsa_code_object_reader_create_from_file_t = hsa_status_t (*)(hsa_file_t,
+                                                                   hsa_code_object_reader_t *);
+using hsa_code_object_reader_destroy_t = hsa_status_t (*)(hsa_code_object_reader_t);
+using hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size_t =
+    hsa_status_t (*)(hsa_file_t, size_t, size_t, hsa_code_object_reader_t *);
 
 hipModuleLoadData_t real_hipModuleLoadData = nullptr;
 hipModuleUnload_t real_hipModuleUnload = nullptr;
@@ -45,9 +66,16 @@ hipMalloc_t real_hipMalloc = nullptr;
 hipMemset_t real_hipMemset = nullptr;
 hipFree_t real_hipFree = nullptr;
 hipGetErrorString_t real_hipGetErrorString = nullptr;
+hsa_code_object_reader_create_from_memory_t real_hsa_code_object_reader_create_from_memory =
+    nullptr;
+hsa_code_object_reader_create_from_file_t real_hsa_code_object_reader_create_from_file = nullptr;
+hsa_code_object_reader_destroy_t real_hsa_code_object_reader_destroy = nullptr;
+hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size_t
+    real_hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size = nullptr;
 
 std::once_flag g_symbol_once;
 void *g_explicit_hip_runtime = nullptr;
+void *g_explicit_hsa_runtime = nullptr;
 thread_local uint32_t g_intercept_depth = 0;
 
 std::mutex g_runtime_mutex;
@@ -55,6 +83,7 @@ uint8_t *g_afl_area = nullptr;
 int g_afl_shm_id = -1;
 void *g_device_counters = nullptr;
 std::vector<uint32_t> g_host_counters;
+rocjitsu::HsaCodeObjectReaderRewriter g_hsa_reader_rewriter;
 
 bool env_flag(const char *name) {
   const char *value = getenv(name);
@@ -73,6 +102,12 @@ template <typename T> T load_hip_symbol(const char *name) {
   return load_symbol<T>(name);
 }
 
+template <typename T> T load_hsa_symbol(const char *name) {
+  if (g_explicit_hsa_runtime != nullptr)
+    return reinterpret_cast<T>(dlsym(g_explicit_hsa_runtime, name));
+  return load_symbol<T>(name);
+}
+
 void resolve_symbols() {
   std::call_once(g_symbol_once, [] {
     const char *runtime_path = getenv("ROCJITSU_AFL_HIP_RUNTIME_PATH");
@@ -80,6 +115,14 @@ void resolve_symbols() {
       g_explicit_hip_runtime = dlopen(runtime_path, RTLD_LAZY | RTLD_LOCAL);
       if (g_explicit_hip_runtime == nullptr && verbose_enabled())
         fprintf(stderr, "rocjitsu-afl: failed to load HIP runtime '%s': %s\n", runtime_path,
+                dlerror());
+    }
+
+    const char *hsa_runtime_path = getenv("ROCJITSU_AFL_HSA_RUNTIME_PATH");
+    if (hsa_runtime_path != nullptr && hsa_runtime_path[0] != '\0') {
+      g_explicit_hsa_runtime = dlopen(hsa_runtime_path, RTLD_LAZY | RTLD_LOCAL);
+      if (g_explicit_hsa_runtime == nullptr && verbose_enabled())
+        fprintf(stderr, "rocjitsu-afl: failed to load HSA runtime '%s': %s\n", hsa_runtime_path,
                 dlerror());
     }
 
@@ -93,6 +136,19 @@ void resolve_symbols() {
     real_hipMemset = load_hip_symbol<hipMemset_t>("hipMemset");
     real_hipFree = load_hip_symbol<hipFree_t>("hipFree");
     real_hipGetErrorString = load_hip_symbol<hipGetErrorString_t>("hipGetErrorString");
+    real_hsa_code_object_reader_create_from_memory =
+        load_hsa_symbol<hsa_code_object_reader_create_from_memory_t>(
+            "hsa_code_object_reader_create_from_memory");
+    real_hsa_code_object_reader_create_from_file =
+        load_hsa_symbol<hsa_code_object_reader_create_from_file_t>(
+            "hsa_code_object_reader_create_from_file");
+    real_hsa_code_object_reader_destroy =
+        load_hsa_symbol<hsa_code_object_reader_destroy_t>("hsa_code_object_reader_destroy");
+    real_hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size =
+        load_hsa_symbol<hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size_t>(
+            "hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size");
+    g_hsa_reader_rewriter.set_api(real_hsa_code_object_reader_create_from_memory,
+                                  real_hsa_code_object_reader_destroy);
   });
 }
 
@@ -179,6 +235,32 @@ uint8_t saturating_add(uint8_t value, uint32_t delta) {
   return static_cast<uint8_t>(std::min<uint32_t>(sum, 255));
 }
 
+std::optional<uint64_t> ensure_device_counter_pointer() {
+  std::lock_guard<std::mutex> lock(g_runtime_mutex);
+  const hipError_t status = ensure_device_counters_locked();
+  if (status != hipSuccess) {
+    if (verbose_enabled())
+      fprintf(stderr, "rocjitsu-afl: HSA reader rewrite disabled: %s\n", hip_error_string(status));
+    return std::nullopt;
+  }
+  return reinterpret_cast<uint64_t>(g_device_counters);
+}
+
+std::optional<std::vector<uint8_t>> try_rewrite_hsa_image(std::span<const uint8_t> image, void *) {
+  if (!rocjitsu::is_supported_amdgpu_elf(image))
+    return std::nullopt;
+
+  const auto state_pointer = ensure_device_counter_pointer();
+  if (!state_pointer.has_value())
+    return std::nullopt;
+
+  std::vector<uint8_t> rewritten = rocjitsu::patch_amdgpu_elf_kernel_entries(image, *state_pointer);
+  if (rewritten.size() == image.size() &&
+      std::equal(rewritten.begin(), rewritten.end(), image.begin(), image.end()))
+    return std::nullopt;
+  return rewritten;
+}
+
 } // namespace
 
 extern "C" {
@@ -249,6 +331,62 @@ hipError_t hipMemcpy(void *dst, const void *src, size_t size_bytes, hipMemcpyKin
     return real_hipMemcpy(dst, src, size_bytes, kind);
   ScopedInterceptionBypass bypass;
   return real_hipMemcpy(dst, src, size_bytes, kind);
+}
+
+hsa_status_t
+hsa_code_object_reader_create_from_memory(const void *code_object, size_t size,
+                                          hsa_code_object_reader_t *code_object_reader) {
+  resolve_symbols();
+  if (real_hsa_code_object_reader_create_from_memory == nullptr)
+    return HSA_STATUS_ERROR_NOT_INITIALIZED;
+  if (interception_bypassed() || code_object == nullptr || size == 0 ||
+      code_object_reader == nullptr)
+    return real_hsa_code_object_reader_create_from_memory(code_object, size, code_object_reader);
+
+  ScopedInterceptionBypass bypass;
+  return g_hsa_reader_rewriter.create_from_memory(code_object, size, code_object_reader,
+                                                  try_rewrite_hsa_image, nullptr);
+}
+
+hsa_status_t hsa_code_object_reader_create_from_file(hsa_file_t file,
+                                                     hsa_code_object_reader_t *code_object_reader) {
+  resolve_symbols();
+  if (real_hsa_code_object_reader_create_from_file == nullptr)
+    return HSA_STATUS_ERROR_NOT_INITIALIZED;
+  if (interception_bypassed() || code_object_reader == nullptr)
+    return real_hsa_code_object_reader_create_from_file(file, code_object_reader);
+
+  ScopedInterceptionBypass bypass;
+  return g_hsa_reader_rewriter.create_from_file(file, code_object_reader,
+                                                real_hsa_code_object_reader_create_from_file,
+                                                try_rewrite_hsa_image, nullptr);
+}
+
+hsa_status_t hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size(
+    hsa_file_t file, size_t offset, size_t size, hsa_code_object_reader_t *code_object_reader) {
+  resolve_symbols();
+  if (real_hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size == nullptr)
+    return HSA_STATUS_ERROR_NOT_INITIALIZED;
+  if (interception_bypassed() || code_object_reader == nullptr) {
+    return real_hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size(
+        file, offset, size, code_object_reader);
+  }
+
+  ScopedInterceptionBypass bypass;
+  return g_hsa_reader_rewriter.create_from_file_with_offset_size(
+      file, offset, size, code_object_reader,
+      real_hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size,
+      try_rewrite_hsa_image, nullptr);
+}
+
+hsa_status_t hsa_code_object_reader_destroy(hsa_code_object_reader_t code_object_reader) {
+  resolve_symbols();
+  if (real_hsa_code_object_reader_destroy == nullptr)
+    return HSA_STATUS_ERROR_NOT_INITIALIZED;
+  if (interception_bypassed())
+    return g_hsa_reader_rewriter.destroy(code_object_reader);
+  ScopedInterceptionBypass bypass;
+  return g_hsa_reader_rewriter.destroy(code_object_reader);
 }
 
 int rocjitsu_afl_persistent_begin() {

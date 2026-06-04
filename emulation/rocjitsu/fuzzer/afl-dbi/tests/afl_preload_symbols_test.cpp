@@ -40,6 +40,10 @@ TEST(RocjitsuAflPreloadSymbolsTest, ExportsVectorAddInterceptSurface) {
       "hipModuleLaunchKernel",
       "hipDeviceSynchronize",
       "hipMemcpy",
+      "hsa_code_object_reader_create_from_memory",
+      "hsa_code_object_reader_create_from_file",
+      "hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size",
+      "hsa_code_object_reader_destroy",
       "rocjitsu_afl_persistent_begin",
       "rocjitsu_afl_persistent_end",
   };
