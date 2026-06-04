@@ -77,3 +77,30 @@ TEST(AmdGpuElfReaderTest, BuildsEntryCounterProbeFromStatePointer) {
   const auto high = std::find(low + 1, words.end(), static_cast<uint32_t>(state_pointer >> 32));
   EXPECT_NE(high, words.end());
 }
+
+TEST(AmdGpuElfReaderTest, RewritesKernelEntriesWithEntryProbe) {
+  constexpr uint64_t state_pointer = 0x1020304050607080ULL;
+  const auto image = rocjitsu::fuzzer::afl::test::make_minimal_amdgpu_elf();
+  const auto original_sites = rocjitsu::discover_amdgpu_kernel_sites(image);
+  ASSERT_EQ(original_sites.size(), 1u);
+
+  const auto patched = rocjitsu::patch_amdgpu_elf_kernel_entries(image, state_pointer);
+  const auto patched_sites = rocjitsu::discover_amdgpu_kernel_sites(patched);
+
+  ASSERT_EQ(patched_sites.size(), 1u);
+  EXPECT_GT(patched.size(), image.size());
+  EXPECT_NE(patched, image);
+  EXPECT_TRUE(rocjitsu::is_supported_amdgpu_elf(patched));
+  EXPECT_EQ(patched_sites[0].kernel_name, original_sites[0].kernel_name);
+  EXPECT_NE(patched_sites[0].entry_file_offset, original_sites[0].entry_file_offset);
+}
+
+TEST(AmdGpuElfReaderTest, KernelEntryRewriteFailsOpenForUnsupportedInput) {
+  auto unsupported = rocjitsu::fuzzer::afl::test::make_minimal_amdgpu_elf();
+  auto ehdr = *reinterpret_cast<const rocjitsu::Elf64_Ehdr *>(unsupported.data());
+  ehdr.e_flags = rocjitsu::EF_AMDGPU_MACH_AMDGCN_GFX90A;
+  write_at(unsupported, 0, ehdr);
+
+  const auto patched = rocjitsu::patch_amdgpu_elf_kernel_entries(unsupported, 0x99);
+  EXPECT_EQ(patched, unsupported);
+}

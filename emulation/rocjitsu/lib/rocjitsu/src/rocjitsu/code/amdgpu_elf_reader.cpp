@@ -3,7 +3,9 @@
 
 #include "rocjitsu/code/amdgpu_elf_reader.h"
 
+#include "rocjitsu/code/amdgpu_code_object.h"
 #include "rocjitsu/code/amdgpu_elf.h"
+#include "rocjitsu/code/patch/code_object_patcher.h"
 #include "rocjitsu/code/patch/instruction_builder.h"
 
 #include "hsa/AMDHSAKernelDescriptor.h"
@@ -400,6 +402,52 @@ std::vector<uint32_t> build_amdgpu_entry_counter_probe_words(uint64_t state_poin
                                  static_cast<uint16_t>(regs.saved_exec_sgpr + 1)));
   append_s_wait_kmcnt(words, arch);
   return words;
+}
+
+std::vector<uint8_t> patch_amdgpu_elf_kernel_entries(std::span<const uint8_t> image,
+                                                     uint64_t state_pointer) {
+  std::vector<uint8_t> fail_open(image.begin(), image.end());
+  const auto header = parse_supported_header(image);
+  if (!header.has_value())
+    return fail_open;
+
+  const auto arch = arch_from_elf_flags(header->e_flags);
+  if (arch == ROCJITSU_CODE_ARCH_INVALID)
+    return fail_open;
+
+  const auto sites = discover_amdgpu_kernel_sites(image);
+  if (sites.empty())
+    return fail_open;
+
+  AmdGpuCodeObject code_object(image.data(), image.size());
+  if (!code_object.is_valid())
+    return fail_open;
+  if (code_object.text_sections().empty())
+    return fail_open;
+
+  CodeObjectPatcher patcher(code_object);
+  const uint64_t text_offset = patcher.text_offset();
+  patcher.set_cave_start(patcher.text_size());
+
+  const auto probe_words = build_amdgpu_entry_counter_probe_words(state_pointer, arch);
+  if (probe_words.empty())
+    return fail_open;
+
+  for (const auto &site : sites) {
+    if (site.entry_file_offset < text_offset)
+      return fail_open;
+    const uint64_t entry_text_offset = site.entry_file_offset - text_offset;
+    const auto new_entry =
+        patcher.append_kernel_entry_prologue(entry_text_offset, probe_words, arch);
+    if (!new_entry.has_value())
+      return fail_open;
+    if (!patcher.redirect_kernel_entry(site.descriptor_file_offset, entry_text_offset, *new_entry))
+      return fail_open;
+  }
+
+  if (!patcher.append_cave_section(".rj_translations"))
+    return fail_open;
+  return patcher.emit();
 }
 
 } // namespace rocjitsu
