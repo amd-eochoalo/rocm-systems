@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "rocjitsu/code/rj_code.h"
+
 namespace rocjitsu {
 
 struct AmdGpuKernelSite {
@@ -20,6 +22,26 @@ struct AmdGpuKernelSite {
 bool is_supported_amdgpu_elf(std::span<const uint8_t> image);
 
 std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8_t> image);
+
+/// @brief Build a kernel-entry AFL device-counter probe.
+///
+/// The probe treats @p state_pointer as the base address of the device counter
+/// array allocated by the RocFuzz AFL runtime. It increments counter slot 0 by
+/// the number of active lanes when a patched kernel entry executes, then
+/// restores EXEC before branching back to the original kernel entry.
+/// @p state_pointer is not AFL's host shared-memory bitmap; it is the
+/// GPU-visible staging buffer that persistent_end later merges into AFL's map.
+///
+/// This is intentionally a fixed entry-only probe: for the minimal vector-add
+/// smoke, one inserted prologue proves that raw AMDGPU ELF patching can feed
+/// device-side coverage back into AFL without pulling in the full edge planner.
+///
+/// @param state_pointer Device virtual address of the AFL device-counter state.
+/// @param arch Target ISA used for wait and memory instruction variants.
+/// @returns Encoded 32-bit AMDGPU instruction words for the entry probe.
+std::vector<uint32_t>
+build_amdgpu_entry_counter_probe_words(uint64_t state_pointer,
+                                       rj_code_arch_t arch = ROCJITSU_CODE_ARCH_RDNA4);
 
 } // namespace rocjitsu
 

@@ -4,6 +4,7 @@
 #include "rocjitsu/code/amdgpu_elf_reader.h"
 
 #include "rocjitsu/code/amdgpu_elf.h"
+#include "rocjitsu/code/patch/instruction_builder.h"
 
 #include "hsa/AMDHSAKernelDescriptor.h"
 
@@ -17,6 +18,164 @@ namespace rocjitsu {
 namespace {
 
 using KernelDescriptor = rocr::llvm::amdhsa::kernel_descriptor_t;
+
+inline constexpr uint16_t kScalarExecLo = 126;
+inline constexpr uint16_t kScalarExecHi = kScalarExecLo + 1;
+inline constexpr uint16_t kScalarLiteral = 255;
+
+struct EntryCounterProbeRegisters {
+  uint8_t saved_exec_sgpr = 2;
+  uint8_t state_sgpr = 4;
+  uint8_t tmp0_sgpr = 6;
+  uint8_t tmp1_sgpr = 6;
+  uint8_t workitem_vgpr = 1;
+  uint8_t tmp0_vgpr = 2;
+};
+
+uint16_t amdgpu_vgpr_src(uint8_t vgpr) { return static_cast<uint16_t>(256u + vgpr); }
+
+uint32_t build_v_mov_b32(uint8_t vdst, uint16_t src0) {
+  return (0x3Fu << 25) | (static_cast<uint32_t>(vdst) << 17) | (1u << 9) | (src0 & 0x1FFu);
+}
+
+uint32_t build_v_mbcnt_lo_u32_b32_word0(uint8_t vdst) { return 0xD71F0000u | vdst; }
+
+uint32_t build_v_mbcnt_hi_u32_b32_word0(uint8_t vdst) { return 0xD7200000u | vdst; }
+
+uint32_t build_v_mbcnt_u32_b32_word1(uint16_t src0, uint16_t src1) {
+  return (src0 & 0x1FFu) | ((src1 & 0x1FFu) << 9);
+}
+
+uint32_t build_v_cmp_eq_u32_sdst_word0(uint8_t sdst) { return 0xD44A0000u | sdst; }
+
+uint32_t build_v_cmp_eq_u32_sdst_word1(uint16_t src0, uint16_t src1) {
+  return (src0 & 0x1FFu) | ((src1 & 0x1FFu) << 9);
+}
+
+uint32_t build_s_cbranch_execz(uint16_t offset_dwords) {
+  return pack_sopp(/*op=*/0x25, offset_dwords);
+}
+
+uint32_t build_s_bcnt1_i32_b64(uint8_t sdst, uint16_t src) {
+  return pack_sop1(/*op=*/0x19, sdst, src);
+}
+
+uint32_t build_s_and_b32(uint8_t sdst, uint16_t src0, uint16_t src1) {
+  return pack_sop2(/*op=*/22, sdst, src0, src1);
+}
+
+uint32_t build_s_or_b32(uint8_t sdst, uint16_t src0, uint16_t src1) {
+  return pack_sop2(/*op=*/24, sdst, src0, src1);
+}
+
+bool uses_gfx9_flat_global_encoding(rj_code_arch_t arch) {
+  return arch == ROCJITSU_CODE_ARCH_CDNA2 || arch == ROCJITSU_CODE_ARCH_CDNA3 ||
+         arch == ROCJITSU_CODE_ARCH_CDNA4;
+}
+
+bool uses_gfx10_flat_global_encoding(rj_code_arch_t arch) {
+  return arch == ROCJITSU_CODE_ARCH_RDNA1 || arch == ROCJITSU_CODE_ARCH_RDNA2;
+}
+
+bool uses_gfx11_global_encoding(rj_code_arch_t arch) {
+  return arch == ROCJITSU_CODE_ARCH_RDNA3 || arch == ROCJITSU_CODE_ARCH_RDNA3_5;
+}
+
+bool uses_gfx9_or_gfx10_waitcnt(rj_code_arch_t arch) {
+  return uses_gfx9_flat_global_encoding(arch) || uses_gfx10_flat_global_encoding(arch);
+}
+
+void append_s_mov_b64_literal(std::vector<uint32_t> &words, uint8_t sdst_lo, uint64_t value,
+                              rj_code_arch_t arch) {
+  words.push_back(build_s_mov_b32(sdst_lo, kScalarLiteral, arch));
+  words.push_back(static_cast<uint32_t>(value));
+  words.push_back(build_s_mov_b32(static_cast<uint16_t>(sdst_lo + 1), kScalarLiteral, arch));
+  words.push_back(static_cast<uint32_t>(value >> 32));
+}
+
+void append_s_wait_kmcnt(std::vector<uint32_t> &words, rj_code_arch_t arch) {
+  if (uses_gfx9_or_gfx10_waitcnt(arch)) {
+    words.push_back(pack_sopp(/*s_waitcnt=*/12, /*all counters complete=*/0));
+    return;
+  }
+  if (uses_gfx11_global_encoding(arch)) {
+    words.push_back(pack_sopp(/*s_waitcnt=*/9, /*all counters complete=*/0));
+    return;
+  }
+  words.push_back(pack_sopp(/*s_wait_kmcnt=*/0x47, /*imm=*/0));
+}
+
+/// @brief Preserve the mbcnt dependency ordering across supported targets.
+///
+/// Newer targets have s_delay_alu for a precise VALU dependency barrier. Older
+/// flat/global encodings used by the minimal probe do not, so a one-cycle NOP is
+/// enough for this fixed sequence.
+void append_valu_dep_2_barrier(std::vector<uint32_t> &words, rj_code_arch_t arch) {
+  if (uses_gfx9_or_gfx10_waitcnt(arch)) {
+    words.push_back(build_s_nop());
+    return;
+  }
+  words.push_back(build_s_delay_alu(/*VALU_DEP_2=*/2, arch));
+}
+
+/// @brief Emit the counter update for the selected ISA memory encoding.
+///
+/// The entry probe always addresses counter slot 0, so the vector address
+/// register is zero and @p saddr_lo/@p saddr_lo+1 hold the device counter base.
+void append_global_atomic_add_u32(std::vector<uint32_t> &words, uint8_t vaddr, uint8_t vdata,
+                                  uint8_t saddr_lo, rj_code_arch_t arch) {
+  if (uses_gfx9_flat_global_encoding(arch)) {
+    words.push_back(0xDD088000u);
+    words.push_back((static_cast<uint32_t>(saddr_lo) << 16) | (static_cast<uint32_t>(vdata) << 8) |
+                    vaddr);
+    return;
+  }
+  if (uses_gfx10_flat_global_encoding(arch)) {
+    words.push_back(0xDCC88000u);
+    words.push_back((static_cast<uint32_t>(saddr_lo) << 16) | (static_cast<uint32_t>(vdata) << 8) |
+                    vaddr);
+    return;
+  }
+  if (uses_gfx11_global_encoding(arch)) {
+    words.push_back(0xDCD60000u);
+    words.push_back((static_cast<uint32_t>(saddr_lo) << 16) | (static_cast<uint32_t>(vdata) << 8) |
+                    vaddr);
+    words.push_back(build_s_nop());
+    return;
+  }
+  words.push_back(0xEE0D4000u | saddr_lo);
+  words.push_back((static_cast<uint32_t>(vdata) << 23) | 0x00080000u);
+  words.push_back(vaddr);
+}
+
+/// @brief Restrict EXEC to the first active lane while retaining the saved mask.
+///
+/// The probe counts active lanes with scalar state, then runs one global atomic
+/// from a single lane. This prevents every active work-item from racing to add
+/// the same lane count while still recording vector-width-sensitive activity.
+void append_mask_exec_to_first_active_lane(std::vector<uint32_t> &words,
+                                           const EntryCounterProbeRegisters &regs,
+                                           rj_code_arch_t arch) {
+  words.push_back(build_s_mov_b32(regs.tmp0_sgpr, regs.saved_exec_sgpr, arch));
+  words.push_back(build_v_mbcnt_lo_u32_b32_word0(regs.tmp0_vgpr));
+  words.push_back(build_v_mbcnt_u32_b32_word1(regs.tmp0_sgpr, scalar_positive_inline_u32(0)));
+  append_valu_dep_2_barrier(words, arch);
+  words.push_back(
+      build_s_mov_b32(regs.tmp0_sgpr, static_cast<uint16_t>(regs.saved_exec_sgpr + 1), arch));
+  words.push_back(build_v_mbcnt_hi_u32_b32_word0(regs.tmp0_vgpr));
+  words.push_back(build_v_mbcnt_u32_b32_word1(regs.tmp0_sgpr, amdgpu_vgpr_src(regs.tmp0_vgpr)));
+  words.push_back(build_v_cmp_eq_u32_sdst_word0(regs.tmp1_sgpr));
+  words.push_back(build_v_cmp_eq_u32_sdst_word1(scalar_positive_inline_u32(0),
+                                                amdgpu_vgpr_src(regs.tmp0_vgpr)));
+  words.push_back(build_s_and_b32(regs.tmp1_sgpr, regs.saved_exec_sgpr, regs.tmp1_sgpr));
+  words.push_back(build_s_and_b32(static_cast<uint8_t>(regs.tmp1_sgpr + 1),
+                                  static_cast<uint16_t>(regs.saved_exec_sgpr + 1),
+                                  static_cast<uint16_t>(regs.tmp1_sgpr + 1)));
+  words.push_back(pack_sopp(/*s_wait_alu=*/8, 0xfffe));
+  words.push_back(build_s_mov_b32(static_cast<uint16_t>(kScalarExecLo), regs.tmp1_sgpr, arch));
+  words.push_back(build_s_mov_b32(static_cast<uint16_t>(kScalarExecHi),
+                                  static_cast<uint16_t>(regs.tmp1_sgpr + 1), arch));
+}
 
 bool image_contains_range(size_t image_size, uint64_t offset, uint64_t size) {
   return offset <= image_size && size <= image_size - offset;
@@ -210,6 +369,37 @@ std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8
     return lhs.descriptor_file_offset < rhs.descriptor_file_offset;
   });
   return sites;
+}
+
+/// @brief Return entry-probe words for a patched raw AMDGPU ELF kernel.
+///
+/// Example use: the HSA reader rewrite path can call this with the runtime's
+/// device counter buffer address, append the returned words to an executable
+/// cave, and redirect each discovered kernel descriptor entry to that cave. A
+/// vector-add AFL smoke then observes device coverage whenever the HIPRTC kernel
+/// launches, even before general basic-block edge instrumentation exists.
+std::vector<uint32_t> build_amdgpu_entry_counter_probe_words(uint64_t state_pointer,
+                                                             rj_code_arch_t arch) {
+  const EntryCounterProbeRegisters regs;
+  std::vector<uint32_t> words;
+  append_s_mov_b64_literal(words, regs.state_sgpr, state_pointer, arch);
+  words.push_back(build_s_mov_b32(regs.saved_exec_sgpr, kScalarExecLo, arch));
+  words.push_back(
+      build_s_mov_b32(static_cast<uint16_t>(regs.saved_exec_sgpr + 1), kScalarExecHi, arch));
+  append_mask_exec_to_first_active_lane(words, regs, arch);
+  words.push_back(build_s_cbranch_execz(/*offset_dwords=*/8));
+  words.push_back(build_s_bcnt1_i32_b64(regs.tmp0_sgpr, regs.saved_exec_sgpr));
+  words.push_back(pack_sopp(/*s_wait_alu=*/8, 0xfffe));
+  words.push_back(build_v_mov_b32(regs.workitem_vgpr, scalar_positive_inline_u32(0)));
+  words.push_back(build_v_mov_b32(regs.tmp0_vgpr, regs.tmp0_sgpr));
+  append_s_wait_kmcnt(words, arch);
+  append_global_atomic_add_u32(words, regs.workitem_vgpr, regs.tmp0_vgpr, regs.state_sgpr, arch);
+  words.push_back(
+      build_s_or_b32(static_cast<uint8_t>(kScalarExecLo), kScalarExecLo, regs.saved_exec_sgpr));
+  words.push_back(build_s_or_b32(static_cast<uint8_t>(kScalarExecHi), kScalarExecHi,
+                                 static_cast<uint16_t>(regs.saved_exec_sgpr + 1)));
+  append_s_wait_kmcnt(words, arch);
+  return words;
 }
 
 } // namespace rocjitsu

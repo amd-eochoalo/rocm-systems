@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -59,4 +60,20 @@ TEST(AmdGpuElfReaderTest, IgnoresMalformedInput) {
   truncated.resize(sizeof(rocjitsu::Elf64_Ehdr));
   EXPECT_FALSE(rocjitsu::is_supported_amdgpu_elf(truncated));
   EXPECT_TRUE(rocjitsu::discover_amdgpu_kernel_sites(truncated).empty());
+}
+
+TEST(AmdGpuElfReaderTest, BuildsEntryCounterProbeFromStatePointer) {
+  constexpr uint64_t state_pointer = 0x0123456789abcdefULL;
+
+  const auto words =
+      rocjitsu::build_amdgpu_entry_counter_probe_words(state_pointer, ROCJITSU_CODE_ARCH_RDNA4);
+
+  ASSERT_FALSE(words.empty());
+  // The runtime patches raw ELF bytes after allocating the device counters, so
+  // the probe must carry that device pointer as immediate words. This is the
+  // GPU-visible staging buffer, not AFL's host shared-memory bitmap.
+  const auto low = std::find(words.begin(), words.end(), static_cast<uint32_t>(state_pointer));
+  ASSERT_NE(low, words.end());
+  const auto high = std::find(low + 1, words.end(), static_cast<uint32_t>(state_pointer >> 32));
+  EXPECT_NE(high, words.end());
 }
