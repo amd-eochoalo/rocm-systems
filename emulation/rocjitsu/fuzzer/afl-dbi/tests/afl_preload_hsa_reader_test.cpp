@@ -42,16 +42,22 @@
 namespace {
 
 using PersistentFn = int (*)();
+using HipModuleLoadDataFn = int (*)(void **, const void *);
+using HipModuleUnloadFn = int (*)(void *);
 using CreateFromMemoryFn = hsa_status_t (*)(const void *, size_t, hsa_code_object_reader_t *);
 using CreateFromFileFn = hsa_status_t (*)(hsa_file_t, hsa_code_object_reader_t *);
 using CreateFromFileWithOffsetFn = hsa_status_t (*)(hsa_file_t, size_t, size_t,
                                                     hsa_code_object_reader_t *);
 using DestroyFn = hsa_status_t (*)(hsa_code_object_reader_t);
+using ResetFakeHipFn = void (*)();
 using ResetFakeHsaFn = void (*)();
 using LastCreateKindFn = int (*)();
 using DestroyCallsFn = int (*)();
 using ReaderDataFn = const uint8_t *(*)(uint64_t);
 using ReaderSizeFn = size_t (*)(uint64_t);
+using ModuleCallsFn = int (*)();
+using ModuleImageFn = const uint8_t *(*)();
+using ModuleImageSizeFn = size_t (*)();
 
 constexpr int kCreateKindMemory = 1;
 constexpr int kCreateKindFile = 2;
@@ -137,14 +143,22 @@ private:
 struct PreloadHarness {
   SharedMemory shm;
   DlHandle preload;
+  DlHandle fake_hip;
   DlHandle fake_hsa;
 
   PersistentFn persistent_begin = nullptr;
+  HipModuleLoadDataFn hip_module_load_data = nullptr;
+  HipModuleUnloadFn hip_module_unload = nullptr;
   CreateFromMemoryFn create_from_memory = nullptr;
   CreateFromFileFn create_from_file = nullptr;
   CreateFromFileWithOffsetFn create_from_file_with_offset = nullptr;
   DestroyFn destroy = nullptr;
+  ResetFakeHipFn reset_fake_hip = nullptr;
   ResetFakeHsaFn reset_fake_hsa = nullptr;
+  ModuleCallsFn module_load_data_calls = nullptr;
+  ModuleCallsFn module_unload_calls = nullptr;
+  ModuleImageFn last_module_image = nullptr;
+  ModuleImageSizeFn last_module_image_size = nullptr;
   LastCreateKindFn last_create_kind = nullptr;
   DestroyCallsFn destroy_calls = nullptr;
   ReaderDataFn reader_data = nullptr;
@@ -156,12 +170,17 @@ struct PreloadHarness {
     setenv("ROCJITSU_AFL_HSA_RUNTIME_PATH", ROCJITSU_AFL_FAKE_HSA_RUNTIME_PATH, 1);
 
     preload.open(ROCJITSU_AFL_PRELOAD_PATH, RTLD_LAZY | RTLD_LOCAL);
+    fake_hip.open(ROCJITSU_AFL_FAKE_HIP_RUNTIME_PATH, RTLD_LAZY | RTLD_LOCAL);
     fake_hsa.open(ROCJITSU_AFL_FAKE_HSA_RUNTIME_PATH, RTLD_LAZY | RTLD_LOCAL);
     EXPECT_NE(preload.get(), nullptr) << dlerror();
+    EXPECT_NE(fake_hip.get(), nullptr) << dlerror();
     EXPECT_NE(fake_hsa.get(), nullptr) << dlerror();
 
     persistent_begin =
         reinterpret_cast<PersistentFn>(preload.symbol("rocjitsu_afl_persistent_begin"));
+    hip_module_load_data =
+        reinterpret_cast<HipModuleLoadDataFn>(preload.symbol("hipModuleLoadData"));
+    hip_module_unload = reinterpret_cast<HipModuleUnloadFn>(preload.symbol("hipModuleUnload"));
     create_from_memory = reinterpret_cast<CreateFromMemoryFn>(
         preload.symbol("hsa_code_object_reader_create_from_memory"));
     create_from_file = reinterpret_cast<CreateFromFileFn>(
@@ -170,6 +189,15 @@ struct PreloadHarness {
         preload.symbol("hsa_ven_amd_loader_code_object_reader_create_from_file_with_offset_size"));
     destroy = reinterpret_cast<DestroyFn>(preload.symbol("hsa_code_object_reader_destroy"));
 
+    reset_fake_hip = reinterpret_cast<ResetFakeHipFn>(fake_hip.symbol("rocfuzz_fake_hip_reset"));
+    module_load_data_calls =
+        reinterpret_cast<ModuleCallsFn>(fake_hip.symbol("rocfuzz_fake_hip_module_load_data_calls"));
+    module_unload_calls =
+        reinterpret_cast<ModuleCallsFn>(fake_hip.symbol("rocfuzz_fake_hip_module_unload_calls"));
+    last_module_image =
+        reinterpret_cast<ModuleImageFn>(fake_hip.symbol("rocfuzz_fake_hip_last_module_image"));
+    last_module_image_size = reinterpret_cast<ModuleImageSizeFn>(
+        fake_hip.symbol("rocfuzz_fake_hip_last_module_image_size"));
     reset_fake_hsa = reinterpret_cast<ResetFakeHsaFn>(fake_hsa.symbol("rocfuzz_fake_hsa_reset"));
     last_create_kind =
         reinterpret_cast<LastCreateKindFn>(fake_hsa.symbol("rocfuzz_fake_hsa_last_create_kind"));
@@ -187,11 +215,18 @@ struct PreloadHarness {
 
   void assert_ready() const {
     ASSERT_NE(persistent_begin, nullptr);
+    ASSERT_NE(hip_module_load_data, nullptr);
+    ASSERT_NE(hip_module_unload, nullptr);
     ASSERT_NE(create_from_memory, nullptr);
     ASSERT_NE(create_from_file, nullptr);
     ASSERT_NE(create_from_file_with_offset, nullptr);
     ASSERT_NE(destroy, nullptr);
+    ASSERT_NE(reset_fake_hip, nullptr);
     ASSERT_NE(reset_fake_hsa, nullptr);
+    ASSERT_NE(module_load_data_calls, nullptr);
+    ASSERT_NE(module_unload_calls, nullptr);
+    ASSERT_NE(last_module_image, nullptr);
+    ASSERT_NE(last_module_image_size, nullptr);
     ASSERT_NE(last_create_kind, nullptr);
     ASSERT_NE(destroy_calls, nullptr);
     ASSERT_NE(reader_data, nullptr);
@@ -231,6 +266,31 @@ TEST(RocjitsuAflPreloadHsaReaderTest, RewritesRawMemoryReaderAndOwnsBytesUntilDe
   EXPECT_EQ(harness.destroy(reader), HSA_STATUS_SUCCESS);
   EXPECT_EQ(harness.destroy_calls(), 1);
   EXPECT_EQ(harness.reader_data(reader.handle), nullptr);
+}
+
+TEST(RocjitsuAflPreloadHsaReaderTest, RewritesRawHipModuleLoadData) {
+  PreloadHarness harness;
+  harness.assert_ready();
+  harness.reset_fake_hip();
+
+  const auto image = rocjitsu::fuzzer::afl::test::make_minimal_amdgpu_elf();
+  void *module = nullptr;
+  ASSERT_EQ(harness.hip_module_load_data(&module, image.data()), 0);
+
+  EXPECT_EQ(harness.module_load_data_calls(), 1);
+  ASSERT_NE(module, nullptr);
+  const uint8_t *loaded_image = harness.last_module_image();
+  ASSERT_NE(loaded_image, nullptr);
+  EXPECT_NE(loaded_image, image.data());
+
+  const size_t loaded_image_size = harness.last_module_image_size();
+  ASSERT_GT(loaded_image_size, image.size());
+  const std::vector<uint8_t> loaded(loaded_image, loaded_image + loaded_image_size);
+  EXPECT_TRUE(rocjitsu::is_supported_amdgpu_elf(loaded));
+  EXPECT_NE(loaded, image);
+
+  ASSERT_EQ(harness.hip_module_unload(module), 0);
+  EXPECT_EQ(harness.module_unload_calls(), 1);
 }
 
 TEST(RocjitsuAflPreloadHsaReaderTest, ForwardsNonRawMemoryReader) {

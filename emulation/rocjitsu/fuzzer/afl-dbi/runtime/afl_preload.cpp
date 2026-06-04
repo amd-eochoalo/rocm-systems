@@ -1,5 +1,6 @@
 #include "rocjitsu_fuzzer/afl_runtime.h"
 
+#include "rocjitsu/code/amdgpu_elf.h"
 #include "rocjitsu/code/amdgpu_elf_reader.h"
 #include "rocjitsu/code/hsa_code_object_reader_rewriter.h"
 
@@ -20,15 +21,26 @@
 #include <sys/shm.h>
 
 #include <algorithm>
+#include <cstring>
+#include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unordered_map>
 #include <vector>
 
 namespace {
 
+using rocjitsu::EI_CLASS;
+using rocjitsu::EI_MAGIC;
+using rocjitsu::EI_MAGIC_SIZE;
+using rocjitsu::Elf64_Ehdr;
+using rocjitsu::Elf64_Phdr;
+using rocjitsu::Elf64_Shdr;
+using rocjitsu::ELFCLASS64;
 using rocjitsu::fuzzer::afl::kCoverageSlots;
 using rocjitsu::fuzzer::afl::kDeviceStart;
 
@@ -84,6 +96,7 @@ int g_afl_shm_id = -1;
 void *g_device_counters = nullptr;
 std::vector<uint32_t> g_host_counters;
 rocjitsu::HsaCodeObjectReaderRewriter g_hsa_reader_rewriter;
+std::unordered_map<hipModule_t, std::vector<uint8_t>> g_rewritten_hip_modules;
 
 bool env_flag(const char *name) {
   const char *value = getenv(name);
@@ -235,6 +248,57 @@ uint8_t saturating_add(uint8_t value, uint32_t delta) {
   return static_cast<uint8_t>(std::min<uint32_t>(sum, 255));
 }
 
+bool checked_add(uint64_t lhs, uint64_t rhs, uint64_t *out) {
+  if (out == nullptr || lhs > std::numeric_limits<uint64_t>::max() - rhs)
+    return false;
+  *out = lhs + rhs;
+  return true;
+}
+
+bool checked_multiply(uint64_t lhs, uint64_t rhs, uint64_t *out) {
+  if (out == nullptr || (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs))
+    return false;
+  *out = lhs * rhs;
+  return true;
+}
+
+std::optional<size_t> infer_raw_elf_image_size(const void *image) {
+  if (image == nullptr)
+    return std::nullopt;
+
+  Elf64_Ehdr ehdr{};
+  std::memcpy(&ehdr, image, sizeof(ehdr));
+  if (std::memcmp(ehdr.e_ident, EI_MAGIC, EI_MAGIC_SIZE) != 0 ||
+      ehdr.e_ident[EI_CLASS] != ELFCLASS64 || ehdr.e_shentsize != sizeof(Elf64_Shdr) ||
+      ehdr.e_shnum == 0)
+    return std::nullopt;
+
+  uint64_t section_headers_bytes = 0;
+  uint64_t section_headers_end = 0;
+  if (!checked_multiply(ehdr.e_shnum, sizeof(Elf64_Shdr), &section_headers_bytes) ||
+      !checked_add(ehdr.e_shoff, section_headers_bytes, &section_headers_end))
+    return std::nullopt;
+
+  uint64_t program_headers_end = 0;
+  if (ehdr.e_phnum != 0) {
+    if (ehdr.e_phentsize != sizeof(Elf64_Phdr))
+      return std::nullopt;
+
+    uint64_t program_headers_bytes = 0;
+    if (!checked_multiply(ehdr.e_phnum, sizeof(Elf64_Phdr), &program_headers_bytes) ||
+        !checked_add(ehdr.e_phoff, program_headers_bytes, &program_headers_end))
+      return std::nullopt;
+  }
+
+  const uint64_t inferred_size = std::max(section_headers_end, program_headers_end);
+  constexpr uint64_t kMaxModuleImageBytes = 256ull * 1024ull * 1024ull;
+  if (inferred_size == 0 || inferred_size > kMaxModuleImageBytes ||
+      inferred_size > std::numeric_limits<size_t>::max())
+    return std::nullopt;
+
+  return static_cast<size_t>(inferred_size);
+}
+
 std::optional<uint64_t> ensure_device_counter_pointer() {
   std::lock_guard<std::mutex> lock(g_runtime_mutex);
   const hipError_t status = ensure_device_counters_locked();
@@ -261,6 +325,14 @@ std::optional<std::vector<uint8_t>> try_rewrite_hsa_image(std::span<const uint8_
   return rewritten;
 }
 
+std::optional<std::vector<uint8_t>> try_rewrite_hip_module_image(const void *image) {
+  const auto image_size = infer_raw_elf_image_size(image);
+  if (!image_size.has_value())
+    return std::nullopt;
+  return try_rewrite_hsa_image(
+      std::span<const uint8_t>(static_cast<const uint8_t *>(image), *image_size), nullptr);
+}
+
 } // namespace
 
 extern "C" {
@@ -271,8 +343,28 @@ hipError_t hipModuleLoadData(hipModule_t *module, const void *image) {
     return kHipErrorRuntimeUnavailable;
   if (interception_bypassed())
     return real_hipModuleLoadData(module, image);
+  if (module == nullptr)
+    return real_hipModuleLoadData(module, image);
   ScopedInterceptionBypass bypass;
-  return real_hipModuleLoadData(module, image);
+  try {
+    auto rewritten = try_rewrite_hip_module_image(image);
+    if (!rewritten.has_value())
+      return real_hipModuleLoadData(module, image);
+
+    hipModule_t loaded_module = nullptr;
+    hipError_t status = real_hipModuleLoadData(&loaded_module, rewritten->data());
+    if (status != hipSuccess)
+      return status;
+
+    if (module != nullptr)
+      *module = loaded_module;
+
+    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    g_rewritten_hip_modules[loaded_module] = std::move(*rewritten);
+    return hipSuccess;
+  } catch (const std::bad_alloc &) {
+    return kHipErrorRuntimeUnavailable;
+  }
 }
 
 hipError_t hipModuleUnload(hipModule_t module) {
@@ -282,7 +374,12 @@ hipError_t hipModuleUnload(hipModule_t module) {
   if (interception_bypassed())
     return real_hipModuleUnload(module);
   ScopedInterceptionBypass bypass;
-  return real_hipModuleUnload(module);
+  const hipError_t status = real_hipModuleUnload(module);
+  if (status == hipSuccess) {
+    std::lock_guard<std::mutex> lock(g_runtime_mutex);
+    g_rewritten_hip_modules.erase(module);
+  }
+  return status;
 }
 
 hipError_t hipModuleGetFunction(hipFunction_t *function, hipModule_t module, const char *kname) {
