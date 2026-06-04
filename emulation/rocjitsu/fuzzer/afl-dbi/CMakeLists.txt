@@ -24,22 +24,40 @@ find_path(
     PATH_SUFFIXES include
 )
 
-add_library(rocjitsu_afl_raw_elf STATIC runtime/raw_amdgpu_elf.cpp)
-target_include_directories(
-    rocjitsu_afl_raw_elf
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
+add_executable(
+    rocjitsu_afl_amdgpu_elf_reader_test
+    tests/amdgpu_elf_reader_test.cpp
 )
-rj_configure_target(rocjitsu_afl_raw_elf PRIVATE_INCLUDES)
-
-add_executable(rocjitsu_afl_raw_amdgpu_elf_test tests/raw_amdgpu_elf_test.cpp)
 target_link_libraries(
-    rocjitsu_afl_raw_amdgpu_elf_test
-    PRIVATE rocjitsu_afl_raw_elf GTest::gtest_main
+    rocjitsu_afl_amdgpu_elf_reader_test
+    PRIVATE
+        rocjitsu_analysis
+        rocjitsu_code
+        rocjitsu_isa
+        rocjitsu_isa_cdna1
+        rocjitsu_isa_cdna2
+        rocjitsu_isa_cdna3
+        rocjitsu_isa_cdna4
+        rocjitsu_isa_rdna1
+        rocjitsu_isa_rdna2
+        rocjitsu_isa_rdna3
+        rocjitsu_isa_rdna3_5
+        rocjitsu_isa_rdna4
+        rocjitsu_isa_risc_v
+        simdojo
+        rocjitsu_vm
+        rocjitsu_vm_amdgpu
+        rocjitsu_vm_risc_v
+        rocjitsu_config
+        util
+        flatbuffers
+        Threads::Threads
+        GTest::gtest_main
 )
-rj_configure_target(rocjitsu_afl_raw_amdgpu_elf_test TEST)
+rj_configure_target(rocjitsu_afl_amdgpu_elf_reader_test TEST)
 add_test(
-    NAME RocjitsuAflDbi.RawAmdGpuElf
-    COMMAND rocjitsu_afl_raw_amdgpu_elf_test
+    NAME RocjitsuAflDbi.AmdGpuElfReader
+    COMMAND rocjitsu_afl_amdgpu_elf_reader_test
 )
 
 if(ROCFUZZ_HIP_RUNTIME AND ROCFUZZ_HIP_INCLUDE_DIR)

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Advanced Micro Devices, Inc.
 // SPDX-License-Identifier: MIT
 
-#include "runtime/raw_amdgpu_elf.h"
+#include "rocjitsu/code/amdgpu_elf_reader.h"
 
 #include "rocjitsu/code/amdgpu_elf.h"
 
@@ -12,7 +12,7 @@
 #include <optional>
 #include <string_view>
 
-namespace rocjitsu::fuzzer::afl {
+namespace rocjitsu {
 
 namespace {
 
@@ -147,11 +147,11 @@ std::optional<uint64_t> executable_vaddr_to_file_offset(uint64_t vaddr,
 
 } // namespace
 
-bool is_supported_raw_amdgpu_elf(std::span<const uint8_t> image) {
+bool is_supported_amdgpu_elf(std::span<const uint8_t> image) {
   return parse_supported_header(image).has_value();
 }
 
-std::vector<RawAmdGpuKernelSite> discover_raw_amdgpu_kernel_sites(std::span<const uint8_t> image) {
+std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8_t> image) {
   const auto ehdr = parse_supported_header(image);
   if (!ehdr.has_value())
     return {};
@@ -160,7 +160,7 @@ std::vector<RawAmdGpuKernelSite> discover_raw_amdgpu_kernel_sites(std::span<cons
   if (!shdrs.has_value())
     return {};
 
-  std::vector<RawAmdGpuKernelSite> sites;
+  std::vector<AmdGpuKernelSite> sites;
   for (const Elf64_Shdr &symtab : *shdrs) {
     if (symtab.sh_type != SHT_SYMTAB && symtab.sh_type != SHT_DYNSYM)
       continue;
@@ -198,7 +198,7 @@ std::vector<RawAmdGpuKernelSite> discover_raw_amdgpu_kernel_sites(std::span<cons
       if (!entry_offset.has_value())
         continue;
 
-      sites.push_back(RawAmdGpuKernelSite{
+      sites.push_back(AmdGpuKernelSite{
           .kernel_name = kernel_name_from_symbol(*symbol, strtab, strtab_size),
           .descriptor_file_offset = *descriptor_offset,
           .entry_file_offset = *entry_offset,
@@ -212,4 +212,4 @@ std::vector<RawAmdGpuKernelSite> discover_raw_amdgpu_kernel_sites(std::span<cons
   return sites;
 }
 
-} // namespace rocjitsu::fuzzer::afl
+} // namespace rocjitsu
