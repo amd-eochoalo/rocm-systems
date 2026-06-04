@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -149,6 +150,32 @@ void append_global_store_u32(std::vector<uint32_t> &words, uint8_t vaddr, uint8_
   words.push_back(0xEE068000u | saddr_lo);
   words.push_back(static_cast<uint32_t>(vdata) << 23);
   words.push_back(vaddr);
+}
+
+std::optional<EntryCounterProbeRegisters>
+allocate_entry_probe_registers(const KernelDescriptor &desc, rj_code_arch_t arch) {
+  const bool wave32 =
+      is_rdna_arch(arch) && AMDHSA_BITS_GET(desc.kernel_code_properties,
+                                            kd::KERNEL_CODE_PROPERTY_ENABLE_WAVEFRONT_SIZE32) != 0;
+  const uint32_t wavefront_size = wave32 ? 32 : 64;
+  const uint32_t vgpr_granularity = descriptor_vgpr_granularity_for_wavefront(arch, wavefront_size);
+  const uint32_t vgpr_granulated =
+      AMDHSA_BITS_GET(desc.compute_pgm_rsrc1, kd::COMPUTE_PGM_RSRC1_GRANULATED_WORKITEM_VGPR_COUNT);
+  const uint32_t vgprs = granulated_count_to_registers(vgpr_granulated, vgpr_granularity);
+
+  constexpr uint32_t sgpr_granularity = 8;
+  const uint32_t sgpr_granulated = AMDHSA_BITS_GET(
+      desc.compute_pgm_rsrc1, kd::COMPUTE_PGM_RSRC1_GRANULATED_WAVEFRONT_SGPR_COUNT);
+  const uint32_t sgprs = granulated_count_to_registers(sgpr_granulated, sgpr_granularity);
+  if (sgprs > std::numeric_limits<uint8_t>::max() - 1 ||
+      vgprs > std::numeric_limits<uint8_t>::max() - 1)
+    return std::nullopt;
+
+  EntryCounterProbeRegisters regs;
+  regs.state_sgpr = static_cast<uint8_t>(sgprs);
+  regs.workitem_vgpr = static_cast<uint8_t>(vgprs);
+  regs.tmp0_vgpr = static_cast<uint8_t>(vgprs + 1);
+  return regs;
 }
 
 void reserve_entry_probe_registers(KernelDescriptor &desc, rj_code_arch_t arch,
@@ -306,6 +333,23 @@ std::optional<uint64_t> executable_vaddr_to_file_offset(uint64_t vaddr,
   return std::nullopt;
 }
 
+std::vector<uint32_t>
+build_amdgpu_entry_counter_probe_words(uint64_t state_pointer, rj_code_arch_t arch,
+                                       const EntryCounterProbeRegisters &regs) {
+  std::vector<uint32_t> words;
+  append_s_mov_b64_literal(words, regs.state_sgpr, state_pointer, arch);
+  constexpr uint32_t slot_byte_offset = 0;
+  static_assert(slot_byte_offset <= kMaxInlinePositiveImm);
+  words.push_back(
+      build_v_mov_b32(regs.workitem_vgpr, amdgpu_positive_inline_const(slot_byte_offset)));
+  words.push_back(build_v_mov_b32(regs.tmp0_vgpr, amdgpu_positive_inline_const(1)));
+  append_valu_dep_2_barrier(words, arch);
+  append_s_wait_kmcnt(words, arch);
+  append_global_store_u32(words, regs.workitem_vgpr, regs.tmp0_vgpr, regs.state_sgpr, arch);
+  append_s_wait_kmcnt(words, arch);
+  return words;
+}
+
 } // namespace
 
 bool is_supported_amdgpu_elf(std::span<const uint8_t> image) {
@@ -370,6 +414,11 @@ std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8
   std::sort(sites.begin(), sites.end(), [](const auto &lhs, const auto &rhs) {
     return lhs.descriptor_file_offset < rhs.descriptor_file_offset;
   });
+  sites.erase(std::unique(sites.begin(), sites.end(),
+                          [](const auto &lhs, const auto &rhs) {
+                            return lhs.descriptor_file_offset == rhs.descriptor_file_offset;
+                          }),
+              sites.end());
   return sites;
 }
 
@@ -382,19 +431,7 @@ std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8
 /// launches, even before general basic-block edge instrumentation exists.
 std::vector<uint32_t> build_amdgpu_entry_counter_probe_words(uint64_t state_pointer,
                                                              rj_code_arch_t arch) {
-  const EntryCounterProbeRegisters regs;
-  std::vector<uint32_t> words;
-  append_s_mov_b64_literal(words, regs.state_sgpr, state_pointer, arch);
-  constexpr uint32_t slot_byte_offset = 0;
-  static_assert(slot_byte_offset <= kMaxInlinePositiveImm);
-  words.push_back(
-      build_v_mov_b32(regs.workitem_vgpr, amdgpu_positive_inline_const(slot_byte_offset)));
-  words.push_back(build_v_mov_b32(regs.tmp0_vgpr, amdgpu_positive_inline_const(1)));
-  append_valu_dep_2_barrier(words, arch);
-  append_s_wait_kmcnt(words, arch);
-  append_global_store_u32(words, regs.workitem_vgpr, regs.tmp0_vgpr, regs.state_sgpr, arch);
-  append_s_wait_kmcnt(words, arch);
-  return words;
+  return build_amdgpu_entry_counter_probe_words(state_pointer, arch, EntryCounterProbeRegisters{});
 }
 
 std::vector<uint8_t> patch_amdgpu_elf_kernel_entries(std::span<const uint8_t> image,
@@ -422,24 +459,32 @@ std::vector<uint8_t> patch_amdgpu_elf_kernel_entries(std::span<const uint8_t> im
   const uint64_t text_offset = patcher.text_offset();
   patcher.set_cave_start(patcher.text_size());
 
-  const auto probe_words = build_amdgpu_entry_counter_probe_words(state_pointer, arch);
-  if (probe_words.empty())
-    return fail_open;
-
   for (const auto &site : sites) {
     if (site.entry_file_offset < text_offset)
       return fail_open;
     const uint64_t entry_text_offset = site.entry_file_offset - text_offset;
+
+    auto descriptor = read_at<KernelDescriptor>(patcher.image_bytes(), site.descriptor_file_offset);
+    if (!descriptor.has_value())
+      return fail_open;
+
+    const auto regs = allocate_entry_probe_registers(*descriptor, arch);
+    if (!regs.has_value())
+      return fail_open;
+    const auto probe_words = build_amdgpu_entry_counter_probe_words(state_pointer, arch, *regs);
+    if (probe_words.empty())
+      return fail_open;
+
     const auto new_entry =
         patcher.append_kernel_entry_prologue(entry_text_offset, probe_words, arch);
     if (!new_entry.has_value())
       return fail_open;
     if (!patcher.redirect_kernel_entry(site.descriptor_file_offset, entry_text_offset, *new_entry))
       return fail_open;
-    auto descriptor = read_at<KernelDescriptor>(patcher.image_bytes(), site.descriptor_file_offset);
+    descriptor = read_at<KernelDescriptor>(patcher.image_bytes(), site.descriptor_file_offset);
     if (!descriptor.has_value())
       return fail_open;
-    reserve_entry_probe_registers(*descriptor, arch, EntryCounterProbeRegisters{});
+    reserve_entry_probe_registers(*descriptor, arch, *regs);
     if (!patcher.patch_kernel_descriptor(
             site.descriptor_file_offset,
             std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&*descriptor),
