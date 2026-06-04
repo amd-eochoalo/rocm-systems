@@ -171,6 +171,8 @@ allocate_entry_probe_registers(const KernelDescriptor &desc, rj_code_arch_t arch
       vgprs > std::numeric_limits<uint8_t>::max() - 1)
     return std::nullopt;
 
+  // Place the fixed entry probe above the kernel's current allocation so the
+  // prologue cannot clobber values that the original entry expects to consume.
   EntryCounterProbeRegisters regs;
   regs.state_sgpr = static_cast<uint8_t>(sgprs);
   regs.workitem_vgpr = static_cast<uint8_t>(vgprs);
@@ -414,6 +416,8 @@ std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8
   std::sort(sites.begin(), sites.end(), [](const auto &lhs, const auto &rhs) {
     return lhs.descriptor_file_offset < rhs.descriptor_file_offset;
   });
+  // HIPRTC code objects may publish the same `.kd` symbol through both
+  // `.dynsym` and `.symtab`; treat those aliases as one kernel descriptor.
   sites.erase(std::unique(sites.begin(), sites.end(),
                           [](const auto &lhs, const auto &rhs) {
                             return lhs.descriptor_file_offset == rhs.descriptor_file_offset;
