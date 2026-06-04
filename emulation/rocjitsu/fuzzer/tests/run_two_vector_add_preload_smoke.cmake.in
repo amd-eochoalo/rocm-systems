@@ -1,0 +1,98 @@
+execute_process(
+    COMMAND "@CMAKE_COMMAND@" --build "@CMAKE_BINARY_DIR@" --target
+            two_vector_add_afl
+    RESULT_VARIABLE _rj_afl_build_result
+)
+
+if(NOT _rj_afl_build_result EQUAL 0)
+    message(FATAL_ERROR "two-vector-add AFL build failed: ${_rj_afl_build_result}")
+endif()
+
+execute_process(
+    COMMAND "@CMAKE_COMMAND@" --build "@CMAKE_BINARY_DIR@" --target
+            rocjitsu_afl_preload
+    RESULT_VARIABLE _rj_afl_preload_build_result
+)
+
+if(NOT _rj_afl_preload_build_result EQUAL 0)
+    message(
+        FATAL_ERROR
+        "rocjitsu AFL preload build failed: ${_rj_afl_preload_build_result}"
+    )
+endif()
+
+set(_rj_seed_a "@RJ_FUZZ_TWO_VECTOR_ADD_PRELOAD_SHOWMAP_PREFIX@.a.seed")
+set(_rj_seed_b "@RJ_FUZZ_TWO_VECTOR_ADD_PRELOAD_SHOWMAP_PREFIX@.b.seed")
+set(_rj_showmap_a "@RJ_FUZZ_TWO_VECTOR_ADD_PRELOAD_SHOWMAP_PREFIX@.a.map")
+set(_rj_showmap_b "@RJ_FUZZ_TWO_VECTOR_ADD_PRELOAD_SHOWMAP_PREFIX@.b.map")
+set(_rj_device_a "@RJ_FUZZ_TWO_VECTOR_ADD_PRELOAD_SHOWMAP_PREFIX@.a.device")
+set(_rj_device_b "@RJ_FUZZ_TWO_VECTOR_ADD_PRELOAD_SHOWMAP_PREFIX@.b.device")
+
+file(WRITE "${_rj_seed_a}" "00000000")
+file(WRITE "${_rj_seed_b}" "11111111")
+file(REMOVE "${_rj_showmap_a}" "${_rj_showmap_b}" "${_rj_device_a}" "${_rj_device_b}")
+
+execute_process(
+    COMMAND
+        "@CMAKE_COMMAND@" -E env
+        LD_LIBRARY_PATH=@RJ_FUZZ_TWO_VECTOR_ADD_LIBRARY_PATH@
+        AFL_SKIP_BIN_CHECK=1 AFL_NO_FORKSRV=1
+        AFL_PRELOAD=@RJ_AFL_PRELOAD_LIBRARY@
+        ROCJITSU_AFL_REQUIRE_PERSISTENT_HOOKS=1
+        "@RJ_AFL_SHOWMAP_EXECUTABLE@" -m none -t 30000 -o "${_rj_showmap_a}" --
+        "@RJ_FUZZ_TWO_VECTOR_ADD_BIN@" "${_rj_seed_a}"
+    RESULT_VARIABLE _rj_showmap_a_result
+)
+
+if(NOT _rj_showmap_a_result EQUAL 0)
+    message(
+        FATAL_ERROR
+        "two-vector-add preload showmap A failed: ${_rj_showmap_a_result}"
+    )
+endif()
+
+execute_process(
+    COMMAND
+        "@CMAKE_COMMAND@" -E env
+        LD_LIBRARY_PATH=@RJ_FUZZ_TWO_VECTOR_ADD_LIBRARY_PATH@
+        AFL_SKIP_BIN_CHECK=1 AFL_NO_FORKSRV=1
+        AFL_PRELOAD=@RJ_AFL_PRELOAD_LIBRARY@
+        ROCJITSU_AFL_REQUIRE_PERSISTENT_HOOKS=1
+        "@RJ_AFL_SHOWMAP_EXECUTABLE@" -m none -t 30000 -o "${_rj_showmap_b}" --
+        "@RJ_FUZZ_TWO_VECTOR_ADD_BIN@" "${_rj_seed_b}"
+    RESULT_VARIABLE _rj_showmap_b_result
+)
+
+if(NOT _rj_showmap_b_result EQUAL 0)
+    message(
+        FATAL_ERROR
+        "two-vector-add preload showmap B failed: ${_rj_showmap_b_result}"
+    )
+endif()
+
+execute_process(
+    COMMAND
+        /bin/sh -c
+        "awk -F: '$1 + 0 >= 32768 { print }' '${_rj_showmap_a}' > '${_rj_device_a}'"
+    RESULT_VARIABLE _rj_filter_a_result
+)
+execute_process(
+    COMMAND
+        /bin/sh -c
+        "awk -F: '$1 + 0 >= 32768 { print }' '${_rj_showmap_b}' > '${_rj_device_b}'"
+    RESULT_VARIABLE _rj_filter_b_result
+)
+
+if(NOT _rj_filter_a_result EQUAL 0 OR NOT _rj_filter_b_result EQUAL 0)
+    message(FATAL_ERROR "two-vector-add device showmap filtering failed")
+endif()
+
+if(NOT EXISTS "${_rj_device_a}" OR NOT EXISTS "${_rj_device_b}")
+    message(FATAL_ERROR "two-vector-add device showmap files were not created")
+endif()
+
+file(READ "${_rj_device_a}" _rj_device_a_contents)
+file(READ "${_rj_device_b}" _rj_device_b_contents)
+if(_rj_device_a_contents STREQUAL "" OR _rj_device_b_contents STREQUAL "")
+    message(FATAL_ERROR "two-vector-add preload smoke did not observe device AFL entries")
+endif()

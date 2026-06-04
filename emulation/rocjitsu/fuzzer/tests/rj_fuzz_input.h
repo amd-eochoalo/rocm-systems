@@ -2,6 +2,8 @@
 
 #include <hip/hip_runtime_api.h>
 
+#include <dlfcn.h>
+
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -156,6 +158,25 @@ private:
 inline bool have_hip_device() {
   int device_count = 0;
   return hipGetDeviceCount(&device_count) == hipSuccess && device_count > 0;
+}
+
+using PersistentHook = int (*)();
+
+inline PersistentHook load_persistent_hook(const char *name) {
+  return reinterpret_cast<PersistentHook>(dlsym(RTLD_DEFAULT, name));
+}
+
+inline bool persistent_hooks_required() {
+  return std::getenv("ROCJITSU_AFL_REQUIRE_PERSISTENT_HOOKS") != nullptr;
+}
+
+inline int call_persistent_hook(PersistentHook hook, const char *name) {
+  if (hook == nullptr)
+    return 0;
+  const int rc = hook();
+  if (rc != 0)
+    std::fprintf(stderr, "%s failed with rc=%d\n", name, rc);
+  return rc;
 }
 
 } // namespace rj_fuzz

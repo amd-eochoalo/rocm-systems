@@ -26,9 +26,9 @@ std::vector<AmdGpuKernelSite> discover_amdgpu_kernel_sites(std::span<const uint8
 /// @brief Build a kernel-entry AFL device-counter probe.
 ///
 /// The probe treats @p state_pointer as the base address of the device counter
-/// array allocated by the RocFuzz AFL runtime. It increments counter slot 0 by
-/// the number of active lanes when a patched kernel entry executes, then
-/// restores EXEC before branching back to the original kernel entry.
+/// array allocated by the RocFuzz AFL runtime. It writes a nonzero value to
+/// counter slot 0 when a patched kernel entry executes before branching back to
+/// the original kernel entry.
 /// @p state_pointer is not AFL's host shared-memory bitmap; it is the
 /// GPU-visible staging buffer that persistent_end later merges into AFL's map.
 ///
